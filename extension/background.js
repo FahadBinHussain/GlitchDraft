@@ -2,6 +2,7 @@
 
 // Import driveService
 import { driveService } from './driveService.js';
+import { isSupportedSite } from './config.js';
 
 let syncInProgress = false;
 let periodicSyncTimer = null;
@@ -102,9 +103,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Handle browser action click
 chrome.action.onClicked.addListener((tab) => {
-    // Only toggle UI on messenger.com or facebook.com/messages
-    if (tab.url.includes('messenger.com') ||
-        (tab.url.includes('facebook.com') && tab.url.includes('/messages/'))) {
+    // Check if current tab is a supported site
+    if (isSupportedSite(tab.url)) {
         handleToggleUI(tab.id);
     }
 });

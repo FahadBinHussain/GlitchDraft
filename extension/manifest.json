@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "GlitchDraft",
     "version": "1.1",
-    "description": "Save draft messages, including text and images, for specific messenger.com chat threads to send later.",
+    "description": "Save draft messages, including text and images, for specific chat threads to send later. Supports multiple messaging platforms.",
     "permissions": [
         "storage",
         "identity",
@@ -20,7 +20,8 @@
         {
             "matches": [
                 "*://*.messenger.com/*",
-                "*://*.facebook.com/messages/t/*"
+                "*://*.facebook.com/messages/t/*",
+                "*://*.hostseba.com/register.php*"
             ],
             "js": [
                 "content.js"

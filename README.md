@@ -36,7 +36,7 @@ A userscript that allows you to save draft messages, including images, for speci
 
 ## How to Use
 
-1. Navigate to any Messenger conversation on messenger.com
+1. Navigate to any supported messaging platform (messenger.com, facebook.com/messages)
 2. Click the 📝 (notepad) button that appears in the bottom right corner of the page (or press `Alt+M`)
 3. Type your message and paste images directly into the text box
 4. Click the "+" button (or press `Alt+S`) to save your message (with images)
@@ -126,5 +126,5 @@ You can modify the userscript to customize:
 
 - All saved messages are stored locally in your browser
 - No data is sent to any external server
-- The script only runs on messenger.com domains
+- The script only runs on supported messaging domains (see config.js for list)
 - Import/export files are processed entirely client-side

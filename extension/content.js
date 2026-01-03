@@ -580,8 +580,22 @@
     // Function to get the current chat URL/ID
     function getCurrentChatId() {
         const url = window.location.href;
-        const match = url.match(/\/t\/(\d+)/);
-        return match ? match[1] : null;
+        
+        // Try to match Facebook Messenger chat pattern
+        const fbMatch = url.match(/\/t\/(\d+)/);
+        if (fbMatch) {
+            return fbMatch[1];
+        }
+        
+        // For other sites, use a sanitized version of the URL as the ID
+        // Remove protocol and hash, replace special characters with underscores
+        const sanitizedUrl = url
+            .replace(/^https?:\/\//, '')  // Remove protocol
+            .replace(/#.*$/, '')           // Remove hash
+            .replace(/[^a-zA-Z0-9]/g, '_') // Replace special chars with underscore
+            .substring(0, 200);            // Limit length
+        
+        return sanitizedUrl || 'default_page';
     }
 
     // Function to create UI elements

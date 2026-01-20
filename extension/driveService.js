@@ -5,19 +5,28 @@ class DriveService {
         this.appFolderName = "GlitchDraft";
         this.appFolderId = null;
         this.authToken = null;
-        // Load saved auth token on initialization
-        this.loadSavedToken();
+        this.refreshToken = null;
+        // Load saved tokens on initialization
+        this.loadSavedTokens();
     }
 
-    async loadSavedToken() {
+    async loadSavedTokens() {
         try {
-            const data = await chrome.storage.local.get(['authToken']);
+            const data = await chrome.storage.local.get(['authToken', 'refreshToken', 'tokenExpiry']);
             if (data.authToken) {
                 this.authToken = data.authToken;
-                console.log('Loaded saved auth token');
+                this.refreshToken = data.refreshToken;
+                this.tokenExpiry = data.tokenExpiry;
+                console.log('Loaded saved auth tokens');
+                
+                // Check if token is expired and refresh if needed
+                if (this.tokenExpiry && Date.now() >= this.tokenExpiry) {
+                    console.log('Token expired, refreshing...');
+                    await this.refreshAccessToken();
+                }
             }
         } catch (error) {
-            console.error('Error loading saved token:', error);
+            console.error('Error loading saved tokens:', error);
         }
     }
 
@@ -25,6 +34,19 @@ class DriveService {
     async getAuthToken(interactive = false) {
         try {
             console.log("Getting auth token, interactive:", interactive);
+
+            // Check if we have a valid token
+            if (this.authToken && this.tokenExpiry && Date.now() < this.tokenExpiry) {
+                console.log('Using cached valid token');
+                return this.authToken;
+            }
+
+            // If token expired and we're not in interactive mode, return null
+            // This will allow the caller to decide whether to prompt the user
+            if (!interactive && this.tokenExpiry && Date.now() >= this.tokenExpiry) {
+                console.log('Token expired, interactive auth required');
+                return null;
+            }
 
             // Detect browser type
             const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edge');
@@ -35,11 +57,14 @@ class DriveService {
             const scopes = manifest.oauth2.scopes.join(' ');
 
             let token;
+            let expiresIn = 3600; // Default 1 hour
 
             if (isChrome) {
                 // Chrome-specific approach: Open a tab for authentication
                 console.log("Using Chrome-specific authentication approach");
-                token = await this.chromeTabAuth(clientId, scopes, interactive);
+                const authResult = await this.chromeTabAuth(clientId, scopes, interactive);
+                token = authResult.access_token;
+                expiresIn = authResult.expires_in || 3600;
             } else {
                 // Edge and other browsers: Use web auth flow
                 console.log("Using standard web auth flow for non-Chrome browsers");
@@ -53,7 +78,7 @@ class DriveService {
                 authUrl.searchParams.append('scope', scopes);
                 authUrl.searchParams.append('prompt', interactive ? 'consent' : 'none');
 
-                token = await new Promise((resolve, reject) => {
+                const authResult = await new Promise((resolve, reject) => {
                     const options = {
                         url: authUrl.href,
                         interactive: interactive
@@ -81,23 +106,36 @@ class DriveService {
                         const url = new URL(responseUrl);
                         const params = new URLSearchParams(url.hash.substring(1)); // remove the '#'
                         const accessToken = params.get('access_token');
+                        const expires = params.get('expires_in');
 
                         if (accessToken) {
                             console.log("Auth token received successfully.");
-                            resolve(accessToken);
+                            resolve({
+                                access_token: accessToken,
+                                expires_in: parseInt(expires) || 3600
+                            });
                         } else {
                             console.error("Could not extract token from response URL.");
                             reject(new Error("Could not extract token from response."));
                         }
                     });
                 });
+                
+                token = authResult.access_token;
+                expiresIn = authResult.expires_in;
             }
 
             if (token) {
                 this.authToken = token;
+                // Set expiry to 50 minutes (tokens usually last 1 hour, we refresh 10 min early)
+                this.tokenExpiry = Date.now() + (Math.min(expiresIn, 3600) * 1000) - 600000;
+                
                 // Save token to storage
-                await chrome.storage.local.set({ authToken: token });
-                console.log("Auth token obtained and saved successfully");
+                await chrome.storage.local.set({ 
+                    authToken: token,
+                    tokenExpiry: this.tokenExpiry
+                });
+                console.log("Auth token obtained and saved successfully, expires in:", expiresIn, "seconds");
                 return token;
             } else {
                 throw new Error("Failed to get auth token");
@@ -105,6 +143,22 @@ class DriveService {
         } catch (error) {
             console.error("Authentication error:", error);
             throw new Error(`Authentication failed: ${error.message}`);
+        }
+    }
+
+    // Refresh access token by re-authenticating
+    async refreshAccessToken() {
+        try {
+            console.log('Refreshing access token with interactive auth...');
+            
+            // Clear expired token
+            await this.clearAuthToken();
+            
+            // Get new token with interactive flow
+            return await this.getAuthToken(true);
+        } catch (error) {
+            console.error('Token refresh failed:', error);
+            throw error;
         }
     }
 
@@ -637,8 +691,22 @@ class DriveService {
     // Check if user is authenticated
     async isAuthenticated() {
         try {
+            // First check if token exists and is not expired
             if (!this.authToken) {
+                console.log('No auth token available');
                 return false;
+            }
+
+            // Check token expiry before making API call
+            if (this.tokenExpiry && Date.now() >= this.tokenExpiry) {
+                console.log('Token expired, attempting refresh...');
+                try {
+                    await this.getAuthToken(false); // Try non-interactive refresh
+                    return this.authToken !== null;
+                } catch (error) {
+                    console.error('Token refresh failed:', error);
+                    return false;
+                }
             }
 
             // Verify token is still valid with a test API call
@@ -650,7 +718,14 @@ class DriveService {
 
             if (!response.ok) {
                 if (response.status === 401) {
+                    console.log('Token invalid (401), clearing and attempting refresh...');
                     await this.clearAuthToken();
+                    try {
+                        await this.getAuthToken(false);
+                        return this.authToken !== null;
+                    } catch (error) {
+                        return false;
+                    }
                 }
                 return false;
             }
@@ -687,11 +762,13 @@ class DriveService {
     // Clear auth token when it becomes invalid
     async clearAuthToken() {
         try {
-            await chrome.storage.local.remove(['authToken']);
+            await chrome.storage.local.remove(['authToken', 'tokenExpiry', 'refreshToken']);
             this.authToken = null;
-            console.log('Cleared auth token');
+            this.tokenExpiry = null;
+            this.refreshToken = null;
+            console.log('Cleared auth tokens');
         } catch (error) {
-            console.error('Error clearing auth token:', error);
+            console.error('Error clearing auth tokens:', error);
         }
     }
 
@@ -732,6 +809,7 @@ class DriveService {
                         const url = new URL(changeInfo.url);
                         const params = new URLSearchParams(url.hash.substring(1));
                         const accessToken = params.get('access_token');
+                        const expiresIn = params.get('expires_in');
 
                         if (accessToken) {
                             // Clean up
@@ -739,7 +817,10 @@ class DriveService {
                             chrome.tabs.remove(tab.id);
 
                             console.log("Successfully obtained token via Chrome tab");
-                            resolve(accessToken);
+                            resolve({
+                                access_token: accessToken,
+                                expires_in: parseInt(expiresIn) || 3600
+                            });
                         }
                     }
                 };

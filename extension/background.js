@@ -6,17 +6,78 @@ import { isSupportedSite } from './config.js';
 
 let syncInProgress = false;
 let periodicSyncTimer = null;
+let tokenRefreshTimer = null;
 
 // Initialize on extension startup
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
     console.log('Extension started');
+    // Ensure authentication on startup
+    await ensureAuthentication();
     startPeriodicSync();
+    startTokenRefreshTimer();
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
     console.log('Extension installed/updated');
+    // Ensure authentication on installation
+    await ensureAuthentication();
     startPeriodicSync();
+    startTokenRefreshTimer();
 });
+
+// Ensure user is authenticated
+async function ensureAuthentication() {
+    try {
+        const isAuth = await driveService.isAuthenticated();
+        if (!isAuth) {
+            console.log('Not authenticated on startup, attempting silent auth...');
+            // Try to get token non-interactively first
+            try {
+                await driveService.getAuthToken(false);
+            } catch (error) {
+                console.log('Silent auth failed, user will need to sign in manually');
+            }
+        } else {
+            console.log('Already authenticated');
+        }
+    } catch (error) {
+        console.error('Error checking authentication on startup:', error);
+    }
+}
+
+// Start token refresh timer - checks every 10 minutes and refreshes if token expires in less than 15 minutes
+function startTokenRefreshTimer() {
+    // Clear any existing timer
+    if (tokenRefreshTimer) {
+        clearInterval(tokenRefreshTimer);
+    }
+
+    // Check every 10 minutes
+    tokenRefreshTimer = setInterval(async () => {
+        try {
+            const data = await chrome.storage.local.get(['tokenExpiry']);
+            if (data.tokenExpiry) {
+                const timeUntilExpiry = data.tokenExpiry - Date.now();
+                const fifteenMinutes = 15 * 60 * 1000;
+                
+                // If token expires in less than 15 minutes, refresh it
+                if (timeUntilExpiry < fifteenMinutes && timeUntilExpiry > 0) {
+                    console.log('Token expiring soon, refreshing proactively...');
+                    try {
+                        await driveService.refreshAccessToken();
+                        console.log('Token refreshed successfully');
+                    } catch (error) {
+                        console.error('Proactive token refresh failed:', error);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error in token refresh timer:', error);
+        }
+    }, 10 * 60 * 1000); // 10 minutes
+
+    console.log('Token refresh timer started');
+}
 
 // Start periodic sync check every 10 seconds
 function startPeriodicSync() {
@@ -409,6 +470,10 @@ chrome.runtime.onSuspend.addListener(() => {
     if (periodicSyncTimer) {
         clearInterval(periodicSyncTimer);
         periodicSyncTimer = null;
+    }
+    if (tokenRefreshTimer) {
+        clearInterval(tokenRefreshTimer);
+        tokenRefreshTimer = null;
     }
     console.log('Extension suspended');
 });

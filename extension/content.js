@@ -2321,6 +2321,9 @@
 
         // Set up MutationObserver to detect dynamically loaded elements
         setupMutationObserver();
+
+        // Check authentication status on page load
+        checkSyncStatus();
     }
 
     // Set up MutationObserver to detect when Messenger dynamically adds or removes elements

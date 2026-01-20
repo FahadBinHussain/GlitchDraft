@@ -335,23 +335,28 @@
 
     .saved-messages-notification {
         position: fixed;
-        top: 20px;
+        top: 80px;
         right: 20px;
-        background-color: var(--bg-primary);
-        color: var(--text-primary);
-        padding: 12px 16px;
-        border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        background-color: #333;
+        color: white;
+        padding: 4px 10px;
+        border-radius: 3px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
         z-index: 10001;
-        border: 1px solid var(--border);
+        font-size: 11px;
+        line-height: 1.2;
         opacity: 0;
-        transform: translateX(100%);
-        transition: all 0.3s ease;
+        transform: translateY(-5px);
+        transition: all 0.15s ease;
+        max-width: 180px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .saved-messages-notification.visible {
-        opacity: 1;
-        transform: translateX(0);
+        opacity: 0.9;
+        transform: translateY(0);
     }
     `;
 
@@ -575,6 +580,9 @@
     let currentChatUrl = '';
     let dragOffset = { x: 0, y: 0 };
     let isDragging = false;
+    let dragStartPos = { x: 0, y: 0 };
+    let hasMoved = false;
+    const DRAG_THRESHOLD = 5; // pixels
     let fileInput = null;
 
     // Function to get the current chat URL/ID
@@ -1138,18 +1146,32 @@
     // Functions for drag functionality
     function startDragging(e) {
         isDragging = true;
+        hasMoved = false;
+        dragStartPos.x = e.clientX;
+        dragStartPos.y = e.clientY;
         const containerRect = ui.container.getBoundingClientRect();
         dragOffset.x = e.clientX - containerRect.left;
         dragOffset.y = e.clientY - containerRect.top;
-        ui.container.style.cursor = 'grabbing';
     }
 
     function drag(e) {
         if (isDragging) {
-            ui.container.style.left = (e.clientX - dragOffset.x) + 'px';
-            ui.container.style.top = (e.clientY - dragOffset.y) + 'px';
-            ui.container.style.right = 'auto';
-            ui.container.style.bottom = 'auto';
+            // Check if moved beyond threshold
+            const deltaX = Math.abs(e.clientX - dragStartPos.x);
+            const deltaY = Math.abs(e.clientY - dragStartPos.y);
+            
+            if (!hasMoved && (deltaX > DRAG_THRESHOLD || deltaY > DRAG_THRESHOLD)) {
+                hasMoved = true;
+                ui.container.style.cursor = 'grabbing';
+            }
+            
+            // Only move if threshold exceeded
+            if (hasMoved) {
+                ui.container.style.left = (e.clientX - dragOffset.x) + 'px';
+                ui.container.style.top = (e.clientY - dragOffset.y) + 'px';
+                ui.container.style.right = 'auto';
+                ui.container.style.bottom = 'auto';
+            }
         }
     }
 
@@ -1157,38 +1179,81 @@
         if (isDragging) {
             isDragging = false;
             ui.container.style.cursor = 'default';
-            const containerRect = ui.container.getBoundingClientRect();
-            chrome.storage.local.set({
-                containerPosition: {
-                    left: containerRect.left,
-                    top: containerRect.top
-                }
-            });
+            
+            // Only save position if actually moved
+            if (hasMoved) {
+                const containerRect = ui.container.getBoundingClientRect();
+                const currentSite = window.location.hostname;
+                
+                // Save position with site-specific key
+                const positionKey = `uiPositions_${currentSite}`;
+                chrome.storage.local.get([positionKey], (result) => {
+                    const positions = result[positionKey] || {};
+                    positions.container = {
+                        left: containerRect.left,
+                        top: containerRect.top
+                    };
+                    
+                    chrome.storage.local.set({
+                        [positionKey]: positions
+                    }, () => {
+                        // Show syncing indicator
+                        showNotification('Syncing position...', '', 'info');
+                        
+                        // Trigger sync to upload position changes to Drive
+                        chrome.runtime.sendMessage({ action: 'sync' }, (response) => {
+                            if (response && response.success) {
+                                showNotification('Position synced!', '', 'success');
+                            } else {
+                                console.error('Position sync failed:', response ? response.message : 'Unknown error');
+                                showNotification('Position sync failed', response ? response.message : 'Unknown error', 'error');
+                            }
+                        });
+                    });
+                });
+            }
+            hasMoved = false;
         }
     }
 
     // --- Toggle button dragging functions ---
     let isDraggingToggle = false;
     let toggleDragOffset = { x: 0, y: 0 };
+    let toggleDragStartPos = { x: 0, y: 0 };
+    let toggleHasMoved = false;
 
     function startDraggingToggle(e) {
         // Prevent event from bubbling up to header drag
         if (e.target === ui.toggleButton) {
             isDraggingToggle = true;
+            toggleHasMoved = false;
+            toggleDragStartPos.x = e.clientX;
+            toggleDragStartPos.y = e.clientY;
             const toggleRect = ui.toggleButton.getBoundingClientRect();
             toggleDragOffset.x = e.clientX - toggleRect.left;
             toggleDragOffset.y = e.clientY - toggleRect.top;
-            ui.toggleButton.style.cursor = 'grabbing';
             e.stopPropagation();
         }
     }
 
     function dragToggle(e) {
         if (isDraggingToggle) {
-            ui.toggleButton.style.left = (e.clientX - toggleDragOffset.x) + 'px';
-            ui.toggleButton.style.top = (e.clientY - toggleDragOffset.y) + 'px';
-            ui.toggleButton.style.right = 'auto';
-            ui.toggleButton.style.bottom = 'auto';
+            // Check if moved beyond threshold
+            const deltaX = Math.abs(e.clientX - toggleDragStartPos.x);
+            const deltaY = Math.abs(e.clientY - toggleDragStartPos.y);
+            
+            if (!toggleHasMoved && (deltaX > DRAG_THRESHOLD || deltaY > DRAG_THRESHOLD)) {
+                toggleHasMoved = true;
+                ui.toggleButton.style.cursor = 'grabbing';
+            }
+            
+            // Only move if threshold exceeded
+            if (toggleHasMoved) {
+                ui.toggleButton.style.left = (e.clientX - toggleDragOffset.x) + 'px';
+                ui.toggleButton.style.top = (e.clientY - toggleDragOffset.y) + 'px';
+                ui.toggleButton.style.right = 'auto';
+                ui.toggleButton.style.bottom = 'auto';
+            }
         }
     }
 
@@ -1196,47 +1261,94 @@
         if (isDraggingToggle) {
             isDraggingToggle = false;
             ui.toggleButton.style.cursor = 'pointer';
-            const toggleRect = ui.toggleButton.getBoundingClientRect();
-            chrome.storage.local.set({
-                togglePosition: {
-                    left: toggleRect.left,
-                    top: toggleRect.top
-                }
-            });
+            
+            // Only save position if actually moved
+            if (toggleHasMoved) {
+                const toggleRect = ui.toggleButton.getBoundingClientRect();
+                const currentSite = window.location.hostname;
+                
+                // Save position with site-specific key
+                const positionKey = `uiPositions_${currentSite}`;
+                chrome.storage.local.get([positionKey], (result) => {
+                    const positions = result[positionKey] || {};
+                    positions.toggle = {
+                        left: toggleRect.left,
+                        top: toggleRect.top
+                    };
+                    
+                    chrome.storage.local.set({
+                        [positionKey]: positions
+                    }, () => {
+                        // Show syncing indicator
+                        showNotification('Syncing button position...', '', 'info');
+                        
+                        // Trigger sync to upload position changes to Drive
+                        chrome.runtime.sendMessage({ action: 'sync' }, (response) => {
+                            if (response && response.success) {
+                                showNotification('Button position synced!', '', 'success');
+                            } else {
+                                console.error('Position sync failed:', response ? response.message : 'Unknown error');
+                                showNotification('Position sync failed', response ? response.message : 'Unknown error', 'error');
+                            }
+                        });
+                    });
+                });
+            }
+            toggleHasMoved = false;
         }
     }
 
     function loadPositions() {
-        chrome.storage.local.get(['containerPosition', 'togglePosition'], (result) => {
-            if (result.containerPosition) {
-                ui.container.style.left = result.containerPosition.left + 'px';
-                ui.container.style.top = result.containerPosition.top + 'px';
-                ui.container.style.right = 'auto';
-                ui.container.style.bottom = 'auto';
-            }
-            if (result.togglePosition) {
-                ui.toggleButton.style.left = result.togglePosition.left + 'px';
-                ui.toggleButton.style.top = result.togglePosition.top + 'px';
-                ui.toggleButton.style.right = 'auto';
-                ui.toggleButton.style.bottom = 'auto';
+        const currentSite = window.location.hostname;
+        const positionKey = `uiPositions_${currentSite}`;
+        
+        chrome.storage.local.get([positionKey], (result) => {
+            if (result[positionKey]) {
+                const positions = result[positionKey];
+                
+                if (positions.container) {
+                    ui.container.style.left = positions.container.left + 'px';
+                    ui.container.style.top = positions.container.top + 'px';
+                    ui.container.style.right = 'auto';
+                    ui.container.style.bottom = 'auto';
+                }
+                
+                if (positions.toggle) {
+                    ui.toggleButton.style.left = positions.toggle.left + 'px';
+                    ui.toggleButton.style.top = positions.toggle.top + 'px';
+                    ui.toggleButton.style.right = 'auto';
+                    ui.toggleButton.style.bottom = 'auto';
+                }
             }
         });
     }
 
-    function showNotification(message) {
+    function showNotification(title, description = '', type = 'info') {
         let notification = document.querySelector('.saved-messages-notification');
         if (!notification) {
             notification = document.createElement('div');
             notification.className = 'saved-messages-notification';
+            notification.dataset.savedMessageUiElement = 'true';
             document.body.appendChild(notification);
         }
 
-        notification.textContent = message;
-        notification.classList.add('visible');
+        // Set content (ignore description for compact display)
+        notification.textContent = title;
 
+        // Add type class for color
+        notification.className = 'saved-messages-notification visible';
+        if (type === 'success') {
+            notification.style.backgroundColor = '#42b883';
+        } else if (type === 'error') {
+            notification.style.backgroundColor = '#e74c3c';
+        } else {
+            notification.style.backgroundColor = '#333';
+        }
+
+        // Auto-hide
         setTimeout(() => {
             notification.classList.remove('visible');
-        }, 3000);
+        }, title.toLowerCase().includes('syncing') ? 800 : 2000);
     }
 
     // Function to save a message
@@ -1978,6 +2090,8 @@
                 if (data.config) {
                     importData.config = data.config;
                 }
+                
+                // Import UI positions (both old and new formats)
                 if (data.containerPosition) {
                     importData.containerPosition = data.containerPosition;
                 }
@@ -1985,9 +2099,12 @@
                     importData.togglePosition = data.togglePosition;
                 }
 
-                // Import message data
+                // Import message data and site-specific UI positions
                 for (const key in data) {
-                    if (key !== 'config' && key !== 'containerPosition' && key !== 'togglePosition') {
+                    // Include site-specific UI positions (uiPositions_*)
+                    if (key.startsWith('uiPositions_')) {
+                        importData[key] = data[key];
+                    } else if (key !== 'config' && key !== 'containerPosition' && key !== 'togglePosition') {
                         if (Array.isArray(data[key])) {
                             importData[key] = data[key]; // This is a chat's message array
                             messageCount += data[key].length;

@@ -4,40 +4,41 @@
     <title>GlitchDraft</title>
     <style>
         body {
-            width: 350px;
+            width: 400px;
             padding: 15px;
             font-family: sans-serif;
-            text-align: center;
         }
-        .sync-button {
+        h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .button {
             background-color: #4285f4;
             color: white;
             border: none;
             padding: 10px 20px;
             border-radius: 5px;
             cursor: pointer;
-            margin: 5px;
+            margin: 5px 5px 5px 0;
             font-size: 14px;
         }
-        .sync-button:hover {
+        .button:hover {
             background-color: #3367d6;
         }
-        .sync-button:disabled {
+        .button:disabled {
             background-color: #ccc;
             cursor: not-allowed;
-        }
-        .auth-button {
-            background-color: #34a853;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: 5px;
-            font-size: 14px;
-        }
-        .auth-button:hover {
-            background-color: #2d8a46;
         }
         .status {
             margin-top: 10px;
@@ -50,37 +51,34 @@
         .error {
             color: #f44336;
         }
-        .warning {
-            color: #ff9800;
+        .config-section {
+            margin-bottom: 15px;
         }
-        .sync-info {
-            margin-top: 10px;
+        .info {
             font-size: 11px;
-            color: #999;
-            text-align: left;
-            white-space: pre-line;
-            line-height: 1.4;
-            font-family: monospace;
-            background-color: #f5f5f5;
-            padding: 8px;
-            border-radius: 4px;
-            border: 1px solid #ddd;
+            color: #666;
+            margin: 5px 0;
         }
     </style>
 </head>
 <body>
-    <h1>GlitchDraft</h1>
-    <p>The saved messages panel is available on supported messaging sites.</p>
-
-    <div id="authSection">
-        <button id="authButton" class="auth-button">Sign in with Google</button>
+    <h3>Firestore Configuration</h3>
+    <div class="config-section">
+        <textarea id="configInput" placeholder='Paste ONLY the {...} part:
+{
+  apiKey: "...",
+  authDomain: "...",
+  projectId: "...",
+  storageBucket: "...",
+  messagingSenderId: "...",
+  appId: "..."
+}'></textarea>
+        <div class="info">From Firebase Console: Register Web App → Copy firebaseConfig object (just the {...} part)</div>
     </div>
-
-    <div id="syncSection" style="display: none;">
-        <button id="syncButton" class="sync-button">Sync Now</button>
-        <div id="status" class="status"></div>
-        <div id="syncInfo" class="sync-info"></div>
-    </div>
+    
+    <button id="saveConfigBtn" class="button">Save Configuration</button>
+    
+    <div id="status" class="status"></div>
 
     <script src="popup.js"></script>
 </body>

@@ -881,19 +881,18 @@
 
         // Update authentication status
         if (statusData.authenticated) {
-            syncStatusText.textContent = 'Connected to Google Drive';
+            syncStatusText.textContent = 'Connected to Firestore';
             syncStatusText.className = 'status success';
         } else {
-            syncStatusText.textContent = 'Not connected to Google Drive';
+            syncStatusText.textContent = 'Not configured';
             syncStatusText.className = 'status warning';
 
-            // Add auth button if not authenticated
-            const authButton = document.createElement('button');
-            authButton.className = 'auth-button';
-            authButton.textContent = 'Sign in with Google';
-            authButton.dataset.savedMessageUiElement = 'true';
-            authButton.onclick = authenticateWithGoogle;
-            syncStatusSection.appendChild(authButton);
+            // Add config instruction if not configured
+            const configNote = document.createElement('div');
+            configNote.className = 'config-note';
+            configNote.textContent = 'Configure Firestore in extension popup';
+            configNote.dataset.savedMessageUiElement = 'true';
+            syncStatusSection.appendChild(configNote);
         }
 
         // Update sync info
@@ -921,7 +920,12 @@
 
             // Animate the progress bar
             let progress = 0;
+            let checkCount = 0;
+            const maxChecks = 100; // Maximum 30 seconds (100 * 300ms)
+            
             const progressInterval = setInterval(() => {
+                checkCount++;
+                
                 // Slow down as we approach 90% to simulate waiting for server
                 if (progress < 90) {
                     progress += (90 - progress) / 10;
@@ -930,8 +934,20 @@
 
                 // Check if sync is still in progress
                 chrome.runtime.sendMessage({ action: 'getSyncStatus' }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        console.error('[CONTENT] Error checking sync status:', chrome.runtime.lastError);
+                        // On error, assume sync completed
+                        clearInterval(progressInterval);
+                        if (progressContainer.parentNode) {
+                            progressContainer.parentNode.removeChild(progressContainer);
+                        }
+                        updateSyncInfo();
+                        return;
+                    }
+                    
                     if (response && response.success && !response.syncInProgress) {
                         // Sync completed, fill the bar and remove it
+                        console.log('[CONTENT] Sync completed, removing progress bar');
                         clearInterval(progressInterval);
                         progressBar.style.width = '100%';
                         setTimeout(() => {
@@ -940,6 +956,14 @@
                             }
                             updateSyncInfo(response);
                         }, 500);
+                    } else if (checkCount >= maxChecks) {
+                        // Timeout - assume sync completed or failed
+                        console.log('[CONTENT] Progress check timeout, removing progress bar');
+                        clearInterval(progressInterval);
+                        if (progressContainer.parentNode) {
+                            progressContainer.parentNode.removeChild(progressContainer);
+                        }
+                        updateSyncInfo();
                     }
                 });
             }, 300);
@@ -1200,7 +1224,7 @@
                         // Show syncing indicator
                         showNotification('Syncing position...', '', 'info');
                         
-                        // Trigger sync to upload position changes to Drive
+                        // Trigger sync to upload position changes to Firestore
                         chrome.runtime.sendMessage({ action: 'sync' }, (response) => {
                             if (response && response.success) {
                                 showNotification('Position synced!', '', 'success');
@@ -1282,7 +1306,7 @@
                         // Show syncing indicator
                         showNotification('Syncing button position...', '', 'info');
                         
-                        // Trigger sync to upload position changes to Drive
+                        // Trigger sync to upload position changes to Firestore
                         chrome.runtime.sendMessage({ action: 'sync' }, (response) => {
                             if (response && response.success) {
                                 showNotification('Button position synced!', '', 'success');
@@ -1417,32 +1441,35 @@
             }
         }
 
-        chrome.storage.local.get(chatId, (result) => {
-            const savedMessages = result[chatId] || [];
+        // Get current messages from Firestore
+        chrome.runtime.sendMessage({ action: 'getDraft', chatId: chatId }, (response) => {
+            if (!response || !response.success) {
+                console.error('Failed to load messages:', response?.message);
+                return;
+            }
+            
+            const savedMessages = response.messages || [];
 
-            // Add the new message at the beginning of the array (newest first)
+            // Add the new message at the beginning
             savedMessages.unshift({
                 html: finalHtml,
                 timestamp: Date.now()
             });
 
-            chrome.storage.local.set({ [chatId]: savedMessages }, () => {
-                console.log('DEBUG: Message saved to local storage, chatId:', chatId);
-                messageInput.innerHTML = '';
-                loadSavedMessages();
-
-                // Trigger sync to upload the new message to Drive
-                // Use a small delay to ensure local storage write is complete
-                console.log('DEBUG: About to trigger syncWithCloud in 100ms');
-                setTimeout(() => {
-                    console.log('DEBUG: Calling syncWithCloud after save');
-                    syncWithCloud();
-                }, 100);
+            // Save to Firestore
+            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages }, (saveResponse) => {
+                if (saveResponse && saveResponse.success) {
+                    console.log('Message saved to Firestore');
+                    messageInput.innerHTML = '';
+                    loadSavedMessages();
+                } else {
+                    console.error('Failed to save:', saveResponse?.message);
+                }
             });
         });
     }
 
-    // Function to sync draft to Google Drive
+    // Function to sync draft to Firestore
     async function syncDraftToCloud(textContent, imageFile) {
         try {
             const response = await new Promise((resolve, reject) => {
@@ -1462,7 +1489,7 @@
             });
 
             if (response && response.success) {
-                console.log('Draft synced to Google Drive successfully');
+                console.log('Draft synced to Firestore successfully');
             } else {
                 console.log('Cloud sync failed:', response ? response.message : 'Unknown error');
             }
@@ -1479,8 +1506,13 @@
             return;
         }
 
-        chrome.storage.local.get(chatId, (result) => {
-            const savedMessages = result[chatId] || [];
+        chrome.runtime.sendMessage({ action: 'getDraft', chatId: chatId }, (response) => {
+            if (!response || !response.success) {
+                ui.body.innerHTML = '<p>Error loading messages</p>';
+                return;
+            }
+            
+            const savedMessages = response.messages || [];
 
             if (savedMessages.length === 0) {
                 ui.body.innerHTML = '<p>No saved messages for this chat</p>';
@@ -1991,35 +2023,35 @@
 
     // Function to delete a saved message
     function deleteMessage(timestamp) {
-        console.log('DEBUG: deleteMessage() called, timestamp:', timestamp);
+        console.log('Deleting message with timestamp:', timestamp);
         const chatId = getCurrentChatId();
-        if (!chatId) {
-            console.log('DEBUG: deleteMessage() - no chatId, returning');
-            return;
-        }
+        if (!chatId) return;
 
-        chrome.storage.local.get(chatId, (result) => {
-            const savedMessages = result[chatId] || [];
+        chrome.runtime.sendMessage({ action: 'getDraft', chatId: chatId }, (response) => {
+            if (!response || !response.success) {
+                console.error('Failed to load messages for delete');
+                return;
+            }
+            
+            const savedMessages = response.messages || [];
 
-            // Find the message by timestamp instead of using index
+            // Find and remove the message
             const messageIndex = savedMessages.findIndex(msg => msg.timestamp === timestamp);
             if (messageIndex === -1) {
-                console.log('DEBUG: Message not found with timestamp:', timestamp);
+                console.log('Message not found');
                 return;
             }
 
-            const deletedMessage = savedMessages[messageIndex];
-            console.log('DEBUG: Deleting message:', deletedMessage);
             savedMessages.splice(messageIndex, 1);
 
-            chrome.storage.local.set({ [chatId]: savedMessages }, () => {
-                console.log('DEBUG: Message deleted from local storage, chatId:', chatId);
-                loadSavedMessages();
-
-                // Perform a full sync to ensure everything is up to date
-                // This will upload all local changes including the deletion
-                console.log('DEBUG: Calling syncWithCloud after delete');
-                syncWithCloud();
+            // Save updated list to Firestore
+            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages }, (saveResponse) => {
+                if (saveResponse && saveResponse.success) {
+                    console.log('Message deleted from Firestore');
+                    loadSavedMessages();
+                } else {
+                    console.error('Failed to delete:', saveResponse?.message);
+                }
             });
         });
     }
@@ -2037,7 +2069,7 @@
         });
     }
 
-    // Function to sync deletion to Google Drive
+    // Function to sync deletion to Firestore
     async function syncDeletionToCloud(jsonFileId, imageFileId) {
         try {
             const response = await new Promise((resolve, reject) => {
@@ -2055,7 +2087,7 @@
             });
 
             if (response && response.success) {
-                console.log('Draft deletion synced to Google Drive successfully');
+                console.log('Draft deletion synced to Firestore successfully');
             } else {
                 console.log('Cloud deletion failed:', response ? response.message : 'Unknown error');
             }

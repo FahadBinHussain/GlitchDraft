@@ -1,6 +1,6 @@
 # GlitchDraft
 
-Save and sync Messenger drafts with Firestore.
+Save and sync drafts with Firestore.
 
 ## Setup
 
@@ -21,12 +21,15 @@ Press Alt+M on Messenger to toggle the draft panel.
 
 ## Firestore Rules
 
-For testing, use these rules (Project Settings > Firestore > Rules):
+Update rules in Firebase Console > Firestore Database > Rules tab:
 ```
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /drafts/{document=**} {
+      allow read, write: if true;
+    }
+    match /settings/{document=**} {
       allow read, write: if true;
     }
   }

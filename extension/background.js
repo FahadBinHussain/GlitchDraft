@@ -28,6 +28,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         handleGetStatus().then(sendResponse);
         return true;
     }
+    if (request.action === "saveSettings") {
+        handleSaveSettings(request.settings).then(sendResponse);
+        return true;
+    }
+    if (request.action === "getSettings") {
+        handleGetSettings().then(sendResponse);
+        return true;
+    }
 });
 
 async function handleGetStatus() {
@@ -40,6 +48,24 @@ async function handleGetStatus() {
         };
     } catch (error) {
         return { success: false, authenticated: false, message: error.message };
+    }
+}
+
+async function handleSaveSettings(settings) {
+    try {
+        await firestoreService.saveSettings(settings);
+        return { success: true };
+    } catch (error) {
+        return { success: false, message: error.message };
+    }
+}
+
+async function handleGetSettings() {
+    try {
+        const settings = await firestoreService.getSettings();
+        return { success: true, settings };
+    } catch (error) {
+        return { success: false, message: error.message };
     }
 }
 

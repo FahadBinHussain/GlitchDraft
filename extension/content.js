@@ -595,6 +595,12 @@
             return fbMatch[1];
         }
         
+        // Try to match Discord channel pattern: /channels/SERVER_ID/CHANNEL_ID
+        const discordMatch = url.match(/\/channels\/(\d+)\/(\d+)/);
+        if (discordMatch) {
+            return `discord_${discordMatch[1]}_${discordMatch[2]}`;
+        }
+        
         // For other sites, use a sanitized version of the URL as the ID
         // Remove protocol and hash, replace special characters with underscores
         const sanitizedUrl = url
@@ -790,6 +796,68 @@
     // Create UI elements
     const ui = createUI();
 
+    // Add ResizeObserver to track container size changes
+    let resizeTimeout;
+    let isApplyingRemoteResize = false; // Prevent sync loop
+    let lastSavedWidth = 0;
+    let lastSavedHeight = 0;
+    
+    const resizeObserver = new ResizeObserver(entries => {
+        for (let entry of entries) {
+            if (entry.target === ui.container && !isApplyingRemoteResize) {
+                // Only save if container is visible and size actually changed significantly
+                const isVisible = ui.container.style.display !== 'none';
+                const currentWidth = ui.container.offsetWidth;
+                const currentHeight = ui.container.offsetHeight;
+                
+                // Add threshold: only save if changed by at least 10px
+                const widthDiff = Math.abs(currentWidth - lastSavedWidth);
+                const heightDiff = Math.abs(currentHeight - lastSavedHeight);
+                
+                if (!isVisible || (widthDiff < 10 && heightDiff < 10)) {
+                    return;
+                }
+                
+                // Debounce resize events to avoid too many saves
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    const currentSite = window.location.hostname;
+                    const positionKey = `uiPositions_${currentSite}`;
+                    
+                    // Get current settings from Firestore
+                    chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
+                        if (!settingsResponse || !settingsResponse.success) return;
+                        
+                        const uiPositions = settingsResponse.settings.uiPositions || {};
+                        uiPositions[positionKey] = uiPositions[positionKey] || {};
+                        
+                        // Update size while preserving position
+                        const containerRect = ui.container.getBoundingClientRect();
+                        uiPositions[positionKey].container = {
+                            left: containerRect.left,
+                            top: containerRect.top,
+                            width: currentWidth,
+                            height: currentHeight
+                        };
+                        
+                        // Update last saved size
+                        lastSavedWidth = currentWidth;
+                        lastSavedHeight = currentHeight;
+                        
+                        // Save to Firestore
+                        chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
+                            if (response && response.success) {
+                                showNotification('Window size saved!', '', 'success');
+                            }
+                        });
+                    });
+                }, 500); // Wait 500ms after resize stops
+            }
+        }
+    });
+    
+    resizeObserver.observe(ui.container);
+
     // Register global keyboard shortcut (Alt+M)
     document.addEventListener('keydown', (e) => {
         if (e.altKey && e.key === 'm') {
@@ -802,6 +870,27 @@
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'toggleUI') {
             toggleContainer();
+            sendResponse({ success: true });
+        } else if (request.action === 'resetPosition') {
+            // Randomize toggle button position
+            const randomLeft = Math.random() * (window.innerWidth - 60);
+            const randomTop = Math.random() * (window.innerHeight - 60);
+            ui.toggleButton.style.left = randomLeft + 'px';
+            ui.toggleButton.style.top = randomTop + 'px';
+            ui.toggleButton.style.right = 'auto';
+            ui.toggleButton.style.bottom = 'auto';
+            
+            // Randomize container position
+            const containerWidth = ui.container.offsetWidth || 300;
+            const containerHeight = ui.container.offsetHeight || 400;
+            const containerLeft = Math.random() * (window.innerWidth - containerWidth);
+            const containerTop = Math.random() * (window.innerHeight - containerHeight);
+            ui.container.style.left = containerLeft + 'px';
+            ui.container.style.top = containerTop + 'px';
+            ui.container.style.right = 'auto';
+            ui.container.style.bottom = 'auto';
+            
+            showNotification('UI position randomized!', '', 'success');
             sendResponse({ success: true });
         } else if (request.action === 'remoteUpdate') {
             // Handle remote update notification
@@ -1208,31 +1297,28 @@
             if (hasMoved) {
                 const containerRect = ui.container.getBoundingClientRect();
                 const currentSite = window.location.hostname;
-                
-                // Save position with site-specific key
                 const positionKey = `uiPositions_${currentSite}`;
-                chrome.storage.local.get([positionKey], (result) => {
-                    const positions = result[positionKey] || {};
-                    positions.container = {
+                
+                // Get current settings from Firestore
+                chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
+                    if (!settingsResponse || !settingsResponse.success) return;
+                    
+                    const uiPositions = settingsResponse.settings.uiPositions || {};
+                    uiPositions[positionKey] = uiPositions[positionKey] || {};
+                    uiPositions[positionKey].container = {
                         left: containerRect.left,
-                        top: containerRect.top
+                        top: containerRect.top,
+                        width: ui.container.offsetWidth,
+                        height: ui.container.offsetHeight
                     };
                     
-                    chrome.storage.local.set({
-                        [positionKey]: positions
-                    }, () => {
-                        // Show syncing indicator
-                        showNotification('Syncing position...', '', 'info');
-                        
-                        // Trigger sync to upload position changes to Firestore
-                        chrome.runtime.sendMessage({ action: 'sync' }, (response) => {
-                            if (response && response.success) {
-                                showNotification('Position synced!', '', 'success');
-                            } else {
-                                console.error('Position sync failed:', response ? response.message : 'Unknown error');
-                                showNotification('Position sync failed', response ? response.message : 'Unknown error', 'error');
-                            }
-                        });
+                    // Save to Firestore
+                    chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
+                        if (response && response.success) {
+                            showNotification('Position & size saved!', '', 'success');
+                        } else {
+                            console.error('Position save failed:', response?.message);
+                        }
                     });
                 });
             }
@@ -1290,31 +1376,26 @@
             if (toggleHasMoved) {
                 const toggleRect = ui.toggleButton.getBoundingClientRect();
                 const currentSite = window.location.hostname;
-                
-                // Save position with site-specific key
                 const positionKey = `uiPositions_${currentSite}`;
-                chrome.storage.local.get([positionKey], (result) => {
-                    const positions = result[positionKey] || {};
-                    positions.toggle = {
+                
+                // Get current settings
+                chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
+                    if (!settingsResponse || !settingsResponse.success) return;
+                    
+                    const uiPositions = settingsResponse.settings.uiPositions || {};
+                    uiPositions[positionKey] = uiPositions[positionKey] || {};
+                    uiPositions[positionKey].toggle = {
                         left: toggleRect.left,
                         top: toggleRect.top
                     };
                     
-                    chrome.storage.local.set({
-                        [positionKey]: positions
-                    }, () => {
-                        // Show syncing indicator
-                        showNotification('Syncing button position...', '', 'info');
-                        
-                        // Trigger sync to upload position changes to Firestore
-                        chrome.runtime.sendMessage({ action: 'sync' }, (response) => {
-                            if (response && response.success) {
-                                showNotification('Button position synced!', '', 'success');
-                            } else {
-                                console.error('Position sync failed:', response ? response.message : 'Unknown error');
-                                showNotification('Position sync failed', response ? response.message : 'Unknown error', 'error');
-                            }
-                        });
+                    // Save to Firestore
+                    chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
+                        if (response && response.success) {
+                            showNotification('Button position saved!', '', 'success');
+                        } else {
+                            console.error('Position save failed:', response?.message);
+                        }
                     });
                 });
             }
@@ -1326,24 +1407,44 @@
         const currentSite = window.location.hostname;
         const positionKey = `uiPositions_${currentSite}`;
         
-        chrome.storage.local.get([positionKey], (result) => {
-            if (result[positionKey]) {
-                const positions = result[positionKey];
-                
-                if (positions.container) {
-                    ui.container.style.left = positions.container.left + 'px';
-                    ui.container.style.top = positions.container.top + 'px';
-                    ui.container.style.right = 'auto';
-                    ui.container.style.bottom = 'auto';
+        chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
+            if (!response || !response.success) return;
+            
+            const positions = response.settings.uiPositions[positionKey];
+            if (!positions) return;
+            
+            // Set flag to prevent resize observer from triggering
+            isApplyingRemoteResize = true;
+            
+            if (positions.container) {
+                ui.container.style.left = positions.container.left + 'px';
+                ui.container.style.top = positions.container.top + 'px';
+                ui.container.style.right = 'auto';
+                ui.container.style.bottom = 'auto';
+                if (positions.container.width) {
+                    ui.container.style.width = positions.container.width + 'px';
+                    lastSavedWidth = positions.container.width;
                 }
-                
-                if (positions.toggle) {
-                    ui.toggleButton.style.left = positions.toggle.left + 'px';
-                    ui.toggleButton.style.top = positions.toggle.top + 'px';
-                    ui.toggleButton.style.right = 'auto';
-                    ui.toggleButton.style.bottom = 'auto';
+                if (positions.container.height) {
+                    ui.container.style.height = positions.container.height + 'px';
+                    lastSavedHeight = positions.container.height;
                 }
             }
+            
+            if (positions.toggle) {
+                ui.toggleButton.style.left = positions.toggle.left + 'px';
+                ui.toggleButton.style.top = positions.toggle.top + 'px';
+                ui.toggleButton.style.right = 'auto';
+                ui.toggleButton.style.bottom = 'auto';
+            }
+            
+            // Initialize position hash for real-time sync
+            lastKnownPositionsHash = JSON.stringify(positions || {});
+            
+            // Reset flag after a short delay
+            setTimeout(() => {
+                isApplyingRemoteResize = false;
+            }, 100);
         });
     }
 
@@ -1558,6 +1659,15 @@
                 copyButton.dataset.savedMessageUiElement = 'true';
                 copyButton.onclick = () => copyToClipboard(message.html, 'Message copied to clipboard! You can now paste it.');
 
+                const editButton = document.createElement('button');
+                editButton.className = 'saved-message-edit';
+                editButton.textContent = 'Edit';
+                editButton.style.backgroundColor = '#2196F3';
+                editButton.style.color = 'white';
+                editButton.title = 'Edit message';
+                editButton.dataset.savedMessageUiElement = 'true';
+                editButton.onclick = () => editMessage(message.timestamp, message.html, messageElement);
+
                 const deleteButton = document.createElement('button');
                 deleteButton.className = 'saved-message-delete';
                 deleteButton.textContent = 'Delete';
@@ -1566,6 +1676,7 @@
 
                 actionsDiv.appendChild(useButton);
                 actionsDiv.appendChild(copyButton);
+                actionsDiv.appendChild(editButton);
                 actionsDiv.appendChild(deleteButton);
 
                 messageElement.appendChild(messageText);
@@ -2022,6 +2133,89 @@
     }
 
     // Function to delete a saved message
+    function editMessage(timestamp, currentHtml, messageElement) {
+        // Convert the message display to an editable textarea
+        const messageText = messageElement.querySelector('div:first-child');
+        const actionsDiv = messageElement.querySelector('.saved-messages-actions');
+        
+        // Create textarea with current content
+        const textarea = document.createElement('textarea');
+        textarea.style.width = '100%';
+        textarea.style.minHeight = '80px';
+        textarea.style.padding = '8px';
+        textarea.style.border = '1px solid #ccc';
+        textarea.style.borderRadius = '4px';
+        textarea.style.fontFamily = 'inherit';
+        textarea.style.fontSize = 'inherit';
+        textarea.style.resize = 'vertical';
+        textarea.dataset.savedMessageUiElement = 'true';
+        
+        // Strip HTML tags for editing (plain text)
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = currentHtml;
+        textarea.value = tempDiv.textContent || tempDiv.innerText || '';
+        
+        // Replace message content with textarea
+        messageText.innerHTML = '';
+        messageText.appendChild(textarea);
+        
+        // Change buttons to Save/Cancel
+        actionsDiv.innerHTML = '';
+        
+        const saveButton = document.createElement('button');
+        saveButton.className = 'saved-message-use';
+        saveButton.textContent = 'Save';
+        saveButton.style.backgroundColor = '#4CAF50';
+        saveButton.style.color = 'white';
+        saveButton.dataset.savedMessageUiElement = 'true';
+        saveButton.onclick = () => saveEditedMessage(timestamp, textarea.value);
+        
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'saved-message-delete';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.dataset.savedMessageUiElement = 'true';
+        cancelButton.onclick = () => loadSavedMessages(); // Reload to cancel
+        
+        actionsDiv.appendChild(saveButton);
+        actionsDiv.appendChild(cancelButton);
+        
+        textarea.focus();
+    }
+    
+    function saveEditedMessage(timestamp, newContent) {
+        const chatId = getCurrentChatId();
+        if (!chatId) return;
+        
+        chrome.runtime.sendMessage({ action: 'getDraft', chatId: chatId }, (response) => {
+            if (!response || !response.success) {
+                console.error('Failed to load messages for edit');
+                return;
+            }
+            
+            const savedMessages = response.messages || [];
+            
+            // Find and update the message
+            const messageIndex = savedMessages.findIndex(msg => msg.timestamp === timestamp);
+            if (messageIndex === -1) {
+                console.log('Message not found');
+                return;
+            }
+            
+            // Update the message with new content (as plain HTML)
+            savedMessages[messageIndex].html = newContent.replace(/\n/g, '<br>');
+            
+            // Save updated list to Firestore
+            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages }, (saveResponse) => {
+                if (saveResponse && saveResponse.success) {
+                    console.log('Message updated in Firestore');
+                    loadSavedMessages();
+                } else {
+                    console.error('Failed to update:', saveResponse?.message);
+                }
+            });
+        });
+    }
+
     function deleteMessage(timestamp) {
         console.log('Deleting message with timestamp:', timestamp);
         const chatId = getCurrentChatId();
@@ -2503,6 +2697,100 @@
 
         // Start observing the target node for configured mutations
         observer.observe(document.body, config);
+        
+        // Start real-time sync polling
+        startRealtimeSync();
+    }
+    
+    // Real-time sync: Poll Firestore for changes every 3 seconds
+    let lastKnownMessagesHash = '';
+    let lastKnownPositionsHash = '';
+    let isFirstPositionLoad = true;
+    let syncInterval = null;
+    
+    function startRealtimeSync() {
+        // Clear existing interval if any
+        if (syncInterval) {
+            clearInterval(syncInterval);
+        }
+        
+        // Poll every 3 seconds
+        syncInterval = setInterval(() => {
+            const chatId = getCurrentChatId();
+            if (!chatId) return;
+            
+            // Check for message changes
+            chrome.runtime.sendMessage({ action: 'getDraft', chatId: chatId }, (response) => {
+                if (!response || !response.success) return;
+                
+                const messages = response.messages || [];
+                
+                // Create a hash of messages to detect any changes (count, content, timestamps)
+                const messagesHash = JSON.stringify(messages.map(m => ({t: m.timestamp, h: m.html})));
+                
+                // Check if messages changed
+                if (messagesHash !== lastKnownMessagesHash) {
+                    lastKnownMessagesHash = messagesHash;
+                    showNotification('Messages synced from another device', '', 'success');
+                    loadSavedMessages();
+                }
+            });
+            
+            // Check for position changes
+            chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
+                if (!response || !response.success) return;
+                
+                const settings = response.settings || {};
+                const currentSite = window.location.hostname;
+                const positionKey = `uiPositions_${currentSite}`;
+                const sitePositions = settings.uiPositions?.[positionKey];
+                
+                // Create a hash of positions
+                const positionsHash = JSON.stringify(sitePositions || {});
+                
+                // Check if positions changed
+                if (positionsHash !== lastKnownPositionsHash && sitePositions) {
+                    const isRealChange = lastKnownPositionsHash !== '' && !isFirstPositionLoad;
+                    lastKnownPositionsHash = positionsHash;
+                    
+                    if (isRealChange) {
+                        showNotification('UI position synced from another device', '', 'success');
+                    }
+                    
+                    isFirstPositionLoad = false;
+                    
+                    // Set flag to prevent resize observer from triggering
+                    isApplyingRemoteResize = true;
+                    
+                    // Apply new positions with px units
+                    if (sitePositions.container) {
+                        ui.container.style.left = sitePositions.container.left + 'px';
+                        ui.container.style.top = sitePositions.container.top + 'px';
+                        ui.container.style.right = 'auto';
+                        ui.container.style.bottom = 'auto';
+                        if (sitePositions.container.width) {
+                            ui.container.style.width = sitePositions.container.width + 'px';
+                            lastSavedWidth = sitePositions.container.width;
+                        }
+                        if (sitePositions.container.height) {
+                            ui.container.style.height = sitePositions.container.height + 'px';
+                            lastSavedHeight = sitePositions.container.height;
+                        }
+                    }
+                    if (sitePositions.toggle) {
+                        ui.toggleButton.style.left = sitePositions.toggle.left + 'px';
+                        ui.toggleButton.style.top = sitePositions.toggle.top + 'px';
+                        ui.toggleButton.style.right = 'auto';
+                        ui.toggleButton.style.bottom = 'auto';
+                    }
+                    
+                    // Reset flag after a short delay
+                    setTimeout(() => {
+                        isApplyingRemoteResize = false;
+                    }, 100);
+                }
+            });
+        }, 2000); // Poll every 2 seconds for faster sync
     }
 
     // Theme toggle function

@@ -5,141 +5,54 @@ class DriveService {
         this.appFolderName = "GlitchDraft";
         this.appFolderId = null;
         this.authToken = null;
-        this.refreshToken = null;
         // Load saved tokens on initialization
         this.loadSavedTokens();
     }
 
     async loadSavedTokens() {
         try {
-            const data = await chrome.storage.local.get(['authToken', 'refreshToken', 'tokenExpiry']);
-            if (data.authToken) {
-                this.authToken = data.authToken;
-                this.refreshToken = data.refreshToken;
-                this.tokenExpiry = data.tokenExpiry;
-                console.log('Loaded saved auth tokens');
-                
-                // Check if token is expired and refresh if needed
-                if (this.tokenExpiry && Date.now() >= this.tokenExpiry) {
-                    console.log('Token expired, refreshing...');
-                    await this.refreshAccessToken();
+            // With Chrome Identity API, we don't need to manually load tokens
+            // Chrome manages tokens automatically, but we can try to get one non-interactively
+            chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                if (token && !chrome.runtime.lastError) {
+                    this.authToken = token;
+                    console.log('Token automatically loaded by Chrome Identity API');
                 }
-            }
+            });
         } catch (error) {
             console.error('Error loading saved tokens:', error);
         }
     }
 
-    // Authentication Function
+    // Authentication Function - Using Chrome Identity API
     async getAuthToken(interactive = false) {
         try {
-            console.log("Getting auth token, interactive:", interactive);
+            console.log("Getting auth token using Chrome Identity API, interactive:", interactive);
 
-            // Check if we have a valid token
-            if (this.authToken && this.tokenExpiry && Date.now() < this.tokenExpiry) {
-                console.log('Using cached valid token');
-                return this.authToken;
-            }
-
-            // If token expired and we're not in interactive mode, return null
-            // This will allow the caller to decide whether to prompt the user
-            if (!interactive && this.tokenExpiry && Date.now() >= this.tokenExpiry) {
-                console.log('Token expired, interactive auth required');
-                return null;
-            }
-
-            // Detect browser type
-            const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edge');
-            console.log("Browser detection: Chrome =", isChrome);
-
-            const manifest = chrome.runtime.getManifest();
-            const clientId = manifest.oauth2.client_id;
-            const scopes = manifest.oauth2.scopes.join(' ');
-
-            let token;
-            let expiresIn = 3600; // Default 1 hour
-
-            if (isChrome) {
-                // Chrome-specific approach: Open a tab for authentication
-                console.log("Using Chrome-specific authentication approach");
-                const authResult = await this.chromeTabAuth(clientId, scopes, interactive);
-                token = authResult.access_token;
-                expiresIn = authResult.expires_in || 3600;
-            } else {
-                // Edge and other browsers: Use web auth flow
-                console.log("Using standard web auth flow for non-Chrome browsers");
-                const redirectUri = chrome.identity.getRedirectURL("oauth2");
-                console.log("Using redirect URI:", redirectUri);
-
-                let authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-                authUrl.searchParams.append('client_id', clientId);
-                authUrl.searchParams.append('redirect_uri', redirectUri);
-                authUrl.searchParams.append('response_type', 'token');
-                authUrl.searchParams.append('scope', scopes);
-                authUrl.searchParams.append('prompt', interactive ? 'consent' : 'none');
-
-                const authResult = await new Promise((resolve, reject) => {
-                    const options = {
-                        url: authUrl.href,
-                        interactive: interactive
-                    };
-
-                    // Add Edge-specific options
-                    if (!interactive) {
-                        options.abortOnLoadForNonInteractive = true;
-                        options.timeoutMsForNonInteractive = 30000;
+            // Use Chrome's built-in identity API which handles token refresh automatically
+            return new Promise((resolve, reject) => {
+                chrome.identity.getAuthToken({ interactive: interactive }, async (token) => {
+                    if (chrome.runtime.lastError) {
+                        console.error("getAuthToken failed:", chrome.runtime.lastError.message);
+                        reject(new Error(`Authentication failed: ${chrome.runtime.lastError.message}`));
+                        return;
                     }
 
-                    chrome.identity.launchWebAuthFlow(options, (responseUrl) => {
-                        if (chrome.runtime.lastError) {
-                            console.error("launchWebAuthFlow failed:", chrome.runtime.lastError.message);
-                            reject(new Error(`Authentication failed: ${chrome.runtime.lastError.message}`));
-                            return;
-                        }
+                    if (!token) {
+                        reject(new Error("No token received"));
+                        return;
+                    }
 
-                        if (!responseUrl) {
-                            reject(new Error("Could not get token. User may have cancelled the login flow."));
-                            return;
-                        }
-
-                        // The token is in the URL fragment.
-                        const url = new URL(responseUrl);
-                        const params = new URLSearchParams(url.hash.substring(1)); // remove the '#'
-                        const accessToken = params.get('access_token');
-                        const expires = params.get('expires_in');
-
-                        if (accessToken) {
-                            console.log("Auth token received successfully.");
-                            resolve({
-                                access_token: accessToken,
-                                expires_in: parseInt(expires) || 3600
-                            });
-                        } else {
-                            console.error("Could not extract token from response URL.");
-                            reject(new Error("Could not extract token from response."));
-                        }
-                    });
+                    console.log("Auth token obtained successfully via Chrome Identity API");
+                    this.authToken = token;
+                    
+                    // Chrome manages the token automatically, so we don't need to store expiry
+                    // Just save the token for reference
+                    await chrome.storage.local.set({ authToken: token });
+                    
+                    resolve(token);
                 });
-                
-                token = authResult.access_token;
-                expiresIn = authResult.expires_in;
-            }
-
-            if (token) {
-                this.authToken = token;
-                // Set expiry to 50 minutes (tokens usually last 1 hour, we refresh 10 min early)
-                this.tokenExpiry = Date.now() + (Math.min(expiresIn, 3600) * 1000) - 600000;
-                
-                // Save token to storage
-                await chrome.storage.local.set({ 
-                    authToken: token,
-                    tokenExpiry: this.tokenExpiry
-                });
-                console.log("Auth token obtained and saved successfully, expires in:", expiresIn, "seconds");
-                return token;
-            } else {
-                throw new Error("Failed to get auth token");
-            }
+            });
         } catch (error) {
             console.error("Authentication error:", error);
             throw new Error(`Authentication failed: ${error.message}`);
@@ -147,19 +60,66 @@ class DriveService {
     }
 
     // Refresh access token by re-authenticating
+    // Refresh access token - Chrome Identity API handles this automatically
     async refreshAccessToken() {
-        try {
-            console.log('Refreshing access token with interactive auth...');
-            
-            // Clear expired token
-            await this.clearAuthToken();
-            
-            // Get new token with interactive flow
-            return await this.getAuthToken(true);
-        } catch (error) {
-            console.error('Token refresh failed:', error);
-            throw error;
+        console.log('Refreshing token using Chrome Identity API...');
+        
+        // Remove cached token to force Chrome to get a fresh one
+        return new Promise((resolve, reject) => {
+            chrome.identity.removeCachedAuthToken({ token: this.authToken }, () => {
+                chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                    if (chrome.runtime.lastError) {
+                        console.error("Token refresh failed:", chrome.runtime.lastError.message);
+                        reject(new Error(chrome.runtime.lastError.message));
+                        return;
+                    }
+                    
+                    if (token) {
+                        this.authToken = token;
+                        chrome.storage.local.set({ authToken: token });
+                        console.log("Token refreshed successfully");
+                        resolve(token);
+                    } else {
+                        reject(new Error("No token received during refresh"));
+                    }
+                });
+            });
+        });
+    }
+
+    // Helper method to make API calls with automatic token refresh on 401
+    async makeAuthenticatedRequest(url, options = {}) {
+        // Ensure we have a token
+        if (!this.authToken) {
+            await this.getAuthToken(false);
         }
+
+        // Add authorization header
+        if (!options.headers) {
+            options.headers = {};
+        }
+        options.headers['Authorization'] = `Bearer ${this.authToken}`;
+
+        // Make the request
+        let response = await fetch(url, options);
+
+        // If 401, refresh token and retry once
+        if (response.status === 401) {
+            console.log('Got 401, refreshing token and retrying...');
+            try {
+                await this.refreshAccessToken();
+                options.headers['Authorization'] = `Bearer ${this.authToken}`;
+                response = await fetch(url, options);
+            } catch (error) {
+                console.error('Token refresh failed:', error);
+                // Try interactive authentication as last resort
+                await this.getAuthToken(true);
+                options.headers['Authorization'] = `Bearer ${this.authToken}`;
+                response = await fetch(url, options);
+            }
+        }
+
+        return response;
     }
 
     // App Folder Management
@@ -688,49 +648,25 @@ class DriveService {
         }
     }
 
-    // Check if user is authenticated
+    // Check if user is authenticated - Simplified for Chrome Identity API
     async isAuthenticated() {
         try {
-            // First check if token exists and is not expired
-            if (!this.authToken) {
-                console.log('No auth token available');
-                return false;
-            }
-
-            // Check token expiry before making API call
-            if (this.tokenExpiry && Date.now() >= this.tokenExpiry) {
-                console.log('Token expired, attempting refresh...');
-                try {
-                    await this.getAuthToken(false); // Try non-interactive refresh
-                    return this.authToken !== null;
-                } catch (error) {
-                    console.error('Token refresh failed:', error);
-                    return false;
-                }
-            }
-
-            // Verify token is still valid with a test API call
-            const response = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
-                headers: {
-                    'Authorization': `Bearer ${this.authToken}`
-                }
-            });
-
-            if (!response.ok) {
-                if (response.status === 401) {
-                    console.log('Token invalid (401), clearing and attempting refresh...');
-                    await this.clearAuthToken();
-                    try {
-                        await this.getAuthToken(false);
-                        return this.authToken !== null;
-                    } catch (error) {
-                        return false;
+            // Try to get a token non-interactively
+            // Chrome will handle token refresh automatically
+            return new Promise((resolve) => {
+                chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                    if (chrome.runtime.lastError || !token) {
+                        console.log('Not authenticated or token unavailable');
+                        resolve(false);
+                        return;
                     }
-                }
-                return false;
-            }
-
-            return true;
+                    
+                    this.authToken = token;
+                    chrome.storage.local.set({ authToken: token });
+                    console.log('Authentication verified, token obtained');
+                    resolve(true);
+                });
+            });
         } catch (error) {
             console.error('Error checking authentication:', error);
             return false;
@@ -760,13 +696,23 @@ class DriveService {
     }
 
     // Clear auth token when it becomes invalid
+    // Clear auth token
     async clearAuthToken() {
         try {
+            // Remove token from Chrome's cache
+            if (this.authToken) {
+                await new Promise((resolve) => {
+                    chrome.identity.removeCachedAuthToken({ token: this.authToken }, () => {
+                        resolve();
+                    });
+                });
+            }
+            
             await chrome.storage.local.remove(['authToken', 'tokenExpiry', 'refreshToken']);
             this.authToken = null;
             this.tokenExpiry = null;
             this.refreshToken = null;
-            console.log('Cleared auth tokens');
+            console.log('Cleared auth tokens from storage and Chrome cache');
         } catch (error) {
             console.error('Error clearing auth tokens:', error);
         }

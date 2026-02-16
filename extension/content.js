@@ -6,6 +6,10 @@
         debugMode: false
     };
 
+    // WhatsApp state management
+    let whatsappCurrentChatId = null;
+    let whatsappChatObserver = null;
+
     // Load initial config from storage
     chrome.storage.local.get('config', (result) => {
         if (result.config) {
@@ -601,6 +605,11 @@
             return `discord_${discordMatch[1]}_${discordMatch[2]}`;
         }
         
+        // Handle WhatsApp Web
+        if (url.includes('web.whatsapp.com')) {
+            return getWhatsAppChatId();
+        }
+        
         // For other sites, use a sanitized version of the URL as the ID
         // Remove protocol and hash, replace special characters with underscores
         const sanitizedUrl = url
@@ -611,6 +620,211 @@
         
         return sanitizedUrl || 'default_page';
     }
+
+    // WhatsApp-specific chat detection
+    function getWhatsAppChatId() {
+        // Return cached chat ID if available
+        if (whatsappCurrentChatId) {
+            return whatsappCurrentChatId;
+        }
+
+        // Try to detect chat from DOM
+        const chatId = extractWhatsAppChatId();
+        if (chatId) {
+            whatsappCurrentChatId = chatId;
+            return chatId;
+        }
+
+        return null;
+    }
+
+    // Extract WhatsApp chat ID from DOM
+    function extractWhatsAppChatId() {
+        // Method 1: Check for active chat in sidebar (most reliable)
+        const activeChat = document.querySelector('div[data-testid="cell-frame-container"][class*="active"]') ||
+                          document.querySelector('div[aria-selected="true"]');
+        
+        if (activeChat) {
+            // Try to get data-id attribute
+            const dataIdElement = activeChat.querySelector('[data-id]');
+            const dataId = dataIdElement?.getAttribute('data-id');
+            
+            if (dataId && dataId.includes('@')) {
+                const sanitizedId = dataId.replace(/[^a-zA-Z0-9@]/g, '_');
+                return `whatsapp_${sanitizedId}`;
+            }
+            
+            // Try to get title attribute from span
+            const chatTitleElement = activeChat.querySelector('span[title]');
+            const chatTitle = chatTitleElement?.getAttribute('title');
+            
+            if (chatTitle) {
+                const sanitizedName = chatTitle
+                    .replace(/[^a-zA-Z0-9\s]/g, '')
+                    .replace(/\s+/g, '_')
+                    .substring(0, 100);
+                return `whatsapp_${sanitizedName}`;
+            }
+        }
+
+        // Method 2: Check for chat header with contact name/group name
+        const headerSelectors = [
+            'header[data-testid="conversation-header"] span[dir="auto"]',
+            'div[data-testid="conversation-panel-wrapper"] header span[title]'
+        ];
+
+        for (const selector of headerSelectors) {
+            const headerElement = document.querySelector(selector);
+            
+            if (headerElement) {
+                const chatName = headerElement.getAttribute('title') || headerElement.textContent?.trim();
+                
+                if (chatName && chatName.length > 0) {
+                    const sanitizedName = chatName
+                        .replace(/[^a-zA-Z0-9\s]/g, '')
+                        .replace(/\s+/g, '_')
+                        .substring(0, 100);
+                    return `whatsapp_${sanitizedName}`;
+                }
+            }
+        }
+
+        // Method 3: Try to find from URL data attribute in conversation area
+        const conversationPanel = document.querySelector('[data-id*="@"]');
+        
+        if (conversationPanel) {
+            const dataId = conversationPanel.getAttribute('data-id');
+            
+            if (dataId && dataId.includes('@')) {
+                const sanitizedId = dataId.replace(/[^a-zA-Z0-9@]/g, '_');
+                return `whatsapp_${sanitizedId}`;
+            }
+        }
+
+        return null;
+    }
+
+    // Initialize WhatsApp chat observer
+    function initWhatsAppObserver() {
+        if (!window.location.href.includes('web.whatsapp.com')) {
+            return;
+        }
+
+        // Disconnect existing observer if any
+        if (whatsappChatObserver) {
+            whatsappChatObserver.disconnect();
+        }
+
+        // Wait for WhatsApp to load - check multiple elements
+        const checkWhatsAppLoaded = setInterval(() => {
+            const app = document.querySelector('#app');
+            const main = document.querySelector('#main');
+            
+            // Start if we find main app container
+            if (app || main) {
+                clearInterval(checkWhatsAppLoaded);
+                
+                // Try initial chat detection
+                const initialChatId = extractWhatsAppChatId();
+                
+                if (initialChatId && initialChatId !== whatsappCurrentChatId) {
+                    whatsappCurrentChatId = initialChatId;
+                    handleChatChange();
+                }
+
+                // Set up MutationObserver to watch for chat changes
+                whatsappChatObserver = new MutationObserver((mutations) => {
+                    const newChatId = extractWhatsAppChatId();
+                    
+                    if (newChatId && newChatId !== whatsappCurrentChatId) {
+                        whatsappCurrentChatId = newChatId;
+                        handleChatChange();
+                    }
+                });
+
+                // Observe the entire app area for better detection
+                const observeTarget = app || main || document.body;
+                whatsappChatObserver.observe(observeTarget, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['title', 'data-id', 'aria-selected', 'class']
+                });
+                
+                // Also add a polling mechanism as backup (check every 2 seconds)
+                setInterval(() => {
+                    const newChatId = extractWhatsAppChatId();
+                    if (newChatId && newChatId !== whatsappCurrentChatId) {
+                        whatsappCurrentChatId = newChatId;
+                        handleChatChange();
+                    }
+                }, 2000);
+            }
+        }, 500);
+
+        // Stop checking after 30 seconds
+        setTimeout(() => {
+            clearInterval(checkWhatsAppLoaded);
+        }, 30000);
+    }
+
+    // Handle chat change event
+    function handleChatChange() {
+        // Update chat ID display
+        updateChatIdDisplay();
+        // Reload drafts for the new chat
+        loadDraftsFromCloud();
+    }
+
+    // Update the chat ID display in the UI
+    function updateChatIdDisplay() {
+        const chatIdDisplay = document.getElementById('chatIdDisplay');
+        if (chatIdDisplay) {
+            const chatId = getCurrentChatId();
+            chatIdDisplay.textContent = `Chat ID: ${chatId || 'Unknown'}`;
+        }
+    }
+
+    /* Debug function for WhatsApp - commented out for optimization
+    function debugWhatsAppStructure() {
+        console.log('=== WhatsApp Debug Info ===');
+        
+        const header = document.querySelector('header[data-testid="conversation-header"]');
+        console.log('Header:', header);
+        if (header) {
+            console.log('Header HTML:', header.innerHTML);
+            const spans = header.querySelectorAll('span');
+            console.log('Header spans:', Array.from(spans).map(s => ({
+                text: s.textContent,
+                title: s.getAttribute('title'),
+                dir: s.getAttribute('dir')
+            })));
+        }
+        
+        const activeChats = document.querySelectorAll('[aria-selected="true"]');
+        console.log('Active chats (aria-selected):', activeChats);
+        activeChats.forEach((chat, i) => {
+            console.log(`Active chat ${i}:`, {
+                html: chat.innerHTML.substring(0, 200),
+                dataId: chat.getAttribute('data-id'),
+                title: chat.querySelector('[title]')?.getAttribute('title')
+            });
+        });
+        
+        const dataIdElements = document.querySelectorAll('[data-id*="@"]');
+        console.log('Elements with data-id containing @:', dataIdElements.length);
+        Array.from(dataIdElements).slice(0, 5).forEach((el, i) => {
+            console.log(`data-id element ${i}:`, {
+                dataId: el.getAttribute('data-id'),
+                tagName: el.tagName,
+                className: el.className
+            });
+        });
+        
+        console.log('Current extracted chat ID:', extractWhatsAppChatId());
+        console.log('=== End Debug Info ===');
+    }
+    */
 
     // Function to create UI elements
     function createUI() {
@@ -633,6 +847,19 @@
         header.textContent = 'GlitchDraft';
         header.innerHTML += '<span class="keyboard-shortcut">Alt+M</span>';
         header.dataset.savedMessageUiElement = 'true';
+
+        // Create chat ID display for debugging
+        const chatIdDisplay = document.createElement('div');
+        chatIdDisplay.id = 'chatIdDisplay';
+        chatIdDisplay.className = 'chat-id-display';
+        chatIdDisplay.dataset.savedMessageUiElement = 'true';
+        chatIdDisplay.style.fontSize = '11px';
+        chatIdDisplay.style.color = 'var(--text-secondary)';
+        chatIdDisplay.style.padding = '4px 8px';
+        chatIdDisplay.style.marginTop = '4px';
+        chatIdDisplay.style.wordBreak = 'break-all';
+        chatIdDisplay.textContent = 'Chat ID: Loading...';
+        header.appendChild(chatIdDisplay);
 
         // Create close button
         const closeButton = document.createElement('span');
@@ -1216,6 +1443,7 @@
         const chatId = getCurrentChatId();
         if (chatId && chatId !== currentChatUrl) {
             currentChatUrl = chatId;
+            updateChatIdDisplay();
             loadSavedMessages();
         }
     }
@@ -1225,6 +1453,7 @@
         isContainerVisible = !isContainerVisible;
         if (isContainerVisible) {
             ui.container.classList.remove('hidden');
+            updateChatIdDisplay();
             loadSavedMessages();
             // Check sync status when panel is opened
             checkSyncStatus();
@@ -2665,6 +2894,9 @@
         // Set up MutationObserver to detect dynamically loaded elements
         setupMutationObserver();
 
+        // Initialize WhatsApp observer if on WhatsApp Web
+        initWhatsAppObserver();
+
         // Check authentication status on page load
         checkSyncStatus();
     }
@@ -2810,4 +3042,7 @@
 
     // Start after page load
     window.addEventListener('load', init);
+    
+    // Debug function exposed (commented out for optimization)
+    // window.debugWhatsAppGlitchDraft = debugWhatsAppStructure;
 })();

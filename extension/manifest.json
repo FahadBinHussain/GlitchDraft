@@ -20,6 +20,7 @@
                 "*://*.messenger.com/*",
                 "*://*.facebook.com/messages/t/*",
                 "*://*.discord.com/channels/*",
+                "*://web.whatsapp.com/*",
                 "*://*.hostseba.com/register.php*"
             ],
             "js": [

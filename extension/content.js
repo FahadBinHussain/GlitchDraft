@@ -79,20 +79,21 @@
         max-width: 600px;
         max-height: 700px;
         transition: all 0.3s ease;
+        box-sizing: border-box;
     }
 
     .saved-messages-toggle {
         position: fixed;
         bottom: 20px;
         right: 20px;
-        width: 60px;
-        height: 60px;
+        width: 38px;
+        height: 38px;
         background-color: var(--accent);
         color: white;
         border: none;
         border-radius: 50%;
         cursor: pointer;
-        font-size: 20px;
+        font-size: 16px;
         font-weight: bold;
         box-shadow: 0 4px 20px rgba(0, 132, 255, 0.3);
         z-index: 9999;
@@ -1026,6 +1027,8 @@
     // Add ResizeObserver to track container size changes
     let resizeTimeout;
     let isApplyingRemoteResize = false; // Prevent sync loop
+    let localPositionDirty = false;    // Suppress remote position sync after local drag/resize
+    let localPositionDirtyTimeout = null;
     let lastSavedWidth = 0;
     let lastSavedHeight = 0;
     
@@ -1034,8 +1037,9 @@
             if (entry.target === ui.container && !isApplyingRemoteResize) {
                 // Only save if container is visible and size actually changed significantly
                 const isVisible = ui.container.style.display !== 'none';
-                const currentWidth = ui.container.offsetWidth;
-                const currentHeight = ui.container.offsetHeight;
+                const rect = ui.container.getBoundingClientRect();
+                const currentWidth = Math.round(rect.width);
+                const currentHeight = Math.round(rect.height);
                 
                 // Add threshold: only save if changed by at least 10px
                 const widthDiff = Math.abs(currentWidth - lastSavedWidth);
@@ -1051,9 +1055,16 @@
                     const currentSite = window.location.hostname;
                     const positionKey = `uiPositions_${currentSite}`;
                     
+                    // Block remote sync from overwriting while we save
+                    localPositionDirty = true;
+                    clearTimeout(localPositionDirtyTimeout);
+                    
                     // Get current settings from Firestore
                     chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
-                        if (!settingsResponse || !settingsResponse.success) return;
+                        if (!settingsResponse || !settingsResponse.success) {
+                            localPositionDirty = false;
+                            return;
+                        }
                         
                         const uiPositions = settingsResponse.settings.uiPositions || {};
                         uiPositions[positionKey] = uiPositions[positionKey] || {};
@@ -1076,6 +1087,8 @@
                             if (response && response.success) {
                                 showNotification('Window size saved!', '', 'success');
                             }
+                            // Allow remote sync again after 3s grace period
+                            localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
                         });
                     });
                 }, 500); // Wait 500ms after resize stops
@@ -1528,9 +1541,16 @@
                 const currentSite = window.location.hostname;
                 const positionKey = `uiPositions_${currentSite}`;
                 
+                // Block remote sync from overwriting while we save
+                localPositionDirty = true;
+                clearTimeout(localPositionDirtyTimeout);
+                
                 // Get current settings from Firestore
                 chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
-                    if (!settingsResponse || !settingsResponse.success) return;
+                    if (!settingsResponse || !settingsResponse.success) {
+                        localPositionDirty = false;
+                        return;
+                    }
                     
                     const uiPositions = settingsResponse.settings.uiPositions || {};
                     uiPositions[positionKey] = uiPositions[positionKey] || {};
@@ -1548,6 +1568,8 @@
                         } else {
                             console.error('Position save failed:', response?.message);
                         }
+                        // Allow remote sync again after 3s grace period
+                        localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
                     });
                 });
             }
@@ -1607,9 +1629,16 @@
                 const currentSite = window.location.hostname;
                 const positionKey = `uiPositions_${currentSite}`;
                 
+                // Block remote sync from overwriting while we save
+                localPositionDirty = true;
+                clearTimeout(localPositionDirtyTimeout);
+                
                 // Get current settings
                 chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
-                    if (!settingsResponse || !settingsResponse.success) return;
+                    if (!settingsResponse || !settingsResponse.success) {
+                        localPositionDirty = false;
+                        return;
+                    }
                     
                     const uiPositions = settingsResponse.settings.uiPositions || {};
                     uiPositions[positionKey] = uiPositions[positionKey] || {};
@@ -1625,6 +1654,8 @@
                         } else {
                             console.error('Position save failed:', response?.message);
                         }
+                        // Allow remote sync again after 3s grace period
+                        localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
                     });
                 });
             }
@@ -2984,12 +3015,14 @@
                 if (positionsHash !== lastKnownPositionsHash && sitePositions) {
                     const isRealChange = lastKnownPositionsHash !== '' && !isFirstPositionLoad;
                     lastKnownPositionsHash = positionsHash;
+                    isFirstPositionLoad = false;
+                    
+                    // Skip applying if we just saved locally (avoid snap-back)
+                    if (localPositionDirty) return;
                     
                     if (isRealChange) {
                         showNotification('UI position synced from another device', '', 'success');
                     }
-                    
-                    isFirstPositionLoad = false;
                     
                     // Set flag to prevent resize observer from triggering
                     isApplyingRemoteResize = true;

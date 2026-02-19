@@ -19,6 +19,7 @@
             "matches": [
                 "*://*.messenger.com/*",
                 "*://*.facebook.com/messages/t/*",
+                "*://*.facebook.com/messages/e2ee/t/*",
                 "*://*.discord.com/channels/*",
                 "*://web.whatsapp.com/*",
                 "*://*.hostseba.com/register.php*"

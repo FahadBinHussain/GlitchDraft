@@ -40,11 +40,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 async function handleGetStatus() {
     try {
-        const data = await chrome.storage.local.get(["firebaseConfig"]);
+        const data = await chrome.storage.local.get(["firebaseConfig", "lastSyncTime"]);
         return {
             success: true,
             authenticated: !!data.firebaseConfig,
-            message: data.firebaseConfig ? "Configured" : "Not configured"
+            message: data.firebaseConfig ? "Configured" : "Not configured",
+            lastSyncTime: data.lastSyncTime || null
         };
     } catch (error) {
         return { success: false, authenticated: false, message: error.message };
@@ -77,6 +78,7 @@ async function handleSync() {
 async function handleGet(chatId) {
     try {
         const messages = await firestoreService.getDraft(chatId);
+        await chrome.storage.local.set({ lastSyncTime: Date.now() });
         return { success: true, messages: messages };
     } catch (error) {
         return { success: false, message: error.message };
@@ -87,6 +89,7 @@ async function handleUpload(chatId, messages) {
     console.log('[BACKGROUND] handleUpload called, chatId:', chatId, 'messages:', messages);
     try {
         await firestoreService.saveDraft(chatId, messages);
+        await chrome.storage.local.set({ lastSyncTime: Date.now() });
         console.log('[BACKGROUND] Save successful');
         return { success: true };
     } catch (error) {

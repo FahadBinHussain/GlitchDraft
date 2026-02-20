@@ -78,7 +78,7 @@
         min-height: 400px;
         max-width: 600px;
         max-height: 700px;
-        transition: all 0.3s ease;
+        transition: opacity 0.3s ease, box-shadow 0.3s ease;
         box-sizing: border-box;
     }
 
@@ -97,7 +97,7 @@
         font-weight: bold;
         box-shadow: 0 4px 20px rgba(0, 132, 255, 0.3);
         z-index: 9999;
-        transition: all 0.3s ease;
+        transition: background-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -109,19 +109,22 @@
     }
 
     .saved-messages-header {
-        padding: 12px;
+        padding: 6px 10px;
         background-color: var(--accent);
         color: white;
         font-weight: bold;
+        font-size: 13px;
         display: flex;
         justify-content: space-between;
         align-items: center;
         cursor: move;
+        min-height: 32px;
     }
 
     .saved-messages-close {
         cursor: pointer;
-        font-size: 18px;
+        font-size: 16px;
+        line-height: 1;
     }
 
     .saved-messages-body {
@@ -233,20 +236,21 @@
 
     .keyboard-shortcut {
         display: inline-block;
-        margin-left: 8px;
-        background-color: var(--bg-secondary);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 10px;
-        color: var(--text-secondary);
+        margin-left: 5px;
+        background-color: rgba(255,255,255,0.2);
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 9px;
+        color: rgba(255,255,255,0.85);
     }
 
     .saved-messages-menu {
         display: flex;
         justify-content: space-between;
-        padding: 8px 12px;
+        padding: 4px 8px;
         background-color: var(--bg-secondary);
         border-bottom: 1px solid var(--border);
+        gap: 2px;
     }
 
     .saved-messages-menu button {
@@ -254,10 +258,11 @@
         background-color: transparent;
         color: var(--text-primary);
         cursor: pointer;
-        font-size: 12px;
-        padding: 4px 8px;
-        border-radius: 4px;
+        font-size: 11px;
+        padding: 3px 6px;
+        border-radius: 3px;
         transition: background-color 0.2s ease;
+        white-space: nowrap;
     }
 
     .saved-messages-menu button:hover {
@@ -265,10 +270,11 @@
     }
 
     .saved-messages-sync-status {
-        padding: 8px 12px;
+        padding: 4px 8px;
         background-color: var(--bg-secondary);
         border-bottom: 1px solid var(--border);
-        font-size: 12px;
+        font-size: 10px;
+        line-height: 1.3;
     }
 
     .status {
@@ -288,15 +294,15 @@
     }
 
     .sync-info {
-        margin-top: 4px;
-        font-size: 11px;
+        margin-top: 2px;
+        font-size: 10px;
         color: var(--text-secondary);
-        line-height: 1.3;
+        line-height: 1.2;
     }
 
     .sync-progress-container {
-        margin-top: 8px;
-        height: 4px;
+        margin-top: 4px;
+        height: 3px;
         background-color: var(--bg-tertiary);
         border-radius: 2px;
         overflow: hidden;
@@ -854,10 +860,10 @@
         chatIdDisplay.id = 'chatIdDisplay';
         chatIdDisplay.className = 'chat-id-display';
         chatIdDisplay.dataset.savedMessageUiElement = 'true';
-        chatIdDisplay.style.fontSize = '11px';
+        chatIdDisplay.style.fontSize = '9px';
         chatIdDisplay.style.color = 'var(--text-secondary)';
-        chatIdDisplay.style.padding = '4px 8px';
-        chatIdDisplay.style.marginTop = '4px';
+        chatIdDisplay.style.padding = '1px 4px';
+        chatIdDisplay.style.marginTop = '1px';
         chatIdDisplay.style.wordBreak = 'break-all';
         chatIdDisplay.textContent = 'Chat ID: Loading...';
         header.appendChild(chatIdDisplay);
@@ -1026,6 +1032,7 @@
 
     // Add ResizeObserver to track container size changes
     let resizeTimeout;
+    let dragSaveTimeout; // Debounce position saves to avoid race conditions
     let isApplyingRemoteResize = false; // Prevent sync loop
     let localPositionDirty = false;    // Suppress remote position sync after local drag/resize
     let localPositionDirtyTimeout = null;
@@ -1036,7 +1043,8 @@
         for (let entry of entries) {
             if (entry.target === ui.container && !isApplyingRemoteResize) {
                 // Only save if container is visible and size actually changed significantly
-                const isVisible = ui.container.style.display !== 'none';
+                const isVisible = !ui.container.classList.contains('hidden') && 
+                                  getComputedStyle(ui.container).display !== 'none';
                 const rect = ui.container.getBoundingClientRect();
                 const currentWidth = Math.round(rect.width);
                 const currentHeight = Math.round(rect.height);
@@ -1069,18 +1077,23 @@
                         const uiPositions = settingsResponse.settings.uiPositions || {};
                         uiPositions[positionKey] = uiPositions[positionKey] || {};
                         
-                        // Update size while preserving position
+                        // Update size while preserving edge-anchored position
                         const containerRect = ui.container.getBoundingClientRect();
-                        uiPositions[positionKey].container = {
-                            left: containerRect.left,
-                            top: containerRect.top,
-                            width: currentWidth,
-                            height: currentHeight
-                        };
+                        uiPositions[positionKey].container = positionToEdgeAnchored(
+                            containerRect.left,
+                            containerRect.top,
+                            currentWidth,
+                            currentHeight
+                        );
                         
                         // Update last saved size
                         lastSavedWidth = currentWidth;
                         lastSavedHeight = currentHeight;
+
+                        // Write to local cache immediately so refresh restores correct size
+                        const localCacheKey = `glitchdraft_pos_${currentSite}`;
+                        chrome.storage.local.set({ [localCacheKey]: uiPositions[positionKey] });
+                        lastKnownPositionsHash = JSON.stringify(uiPositions[positionKey]);
                         
                         // Save to Firestore
                         chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
@@ -1465,7 +1478,10 @@
     function toggleContainer() {
         isContainerVisible = !isContainerVisible;
         if (isContainerVisible) {
+            // Suppress ResizeObserver during show (container going from hidden→visible triggers resize)
+            isApplyingRemoteResize = true;
             ui.container.classList.remove('hidden');
+            setTimeout(() => { isApplyingRemoteResize = false; }, 400); // Wait for CSS transition
             updateChatIdDisplay();
             loadSavedMessages();
             // Check sync status when panel is opened
@@ -1537,41 +1553,54 @@
             
             // Only save position if actually moved
             if (hasMoved) {
-                const containerRect = ui.container.getBoundingClientRect();
                 const currentSite = window.location.hostname;
                 const positionKey = `uiPositions_${currentSite}`;
                 
                 // Block remote sync from overwriting while we save
                 localPositionDirty = true;
                 clearTimeout(localPositionDirtyTimeout);
-                
-                // Get current settings from Firestore
-                chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
-                    if (!settingsResponse || !settingsResponse.success) {
-                        localPositionDirty = false;
-                        return;
-                    }
-                    
-                    const uiPositions = settingsResponse.settings.uiPositions || {};
-                    uiPositions[positionKey] = uiPositions[positionKey] || {};
-                    uiPositions[positionKey].container = {
-                        left: containerRect.left,
-                        top: containerRect.top,
-                        width: ui.container.offsetWidth,
-                        height: ui.container.offsetHeight
-                    };
-                    
-                    // Save to Firestore
-                    chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
-                        if (response && response.success) {
-                            showNotification('Position & size saved!', '', 'success');
-                        } else {
-                            console.error('Position save failed:', response?.message);
+                clearTimeout(dragSaveTimeout);
+
+                // Snapshot position NOW (before any async)
+                // Store edge-anchored distances so position is reproduced accurately on any screen size
+                const containerRect = ui.container.getBoundingClientRect();
+                const newContainerPos = positionToEdgeAnchored(
+                    containerRect.left,
+                    containerRect.top,
+                    ui.container.offsetWidth,
+                    ui.container.offsetHeight
+                );
+
+                // Debounce: wait 300ms so rapid drags only fire one save
+                dragSaveTimeout = setTimeout(() => {
+                    // Get current settings from Firestore
+                    chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
+                        if (!settingsResponse || !settingsResponse.success) {
+                            localPositionDirty = false;
+                            return;
                         }
-                        // Allow remote sync again after 3s grace period
-                        localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
+                        
+                        const uiPositions = settingsResponse.settings.uiPositions || {};
+                        uiPositions[positionKey] = uiPositions[positionKey] || {};
+                        uiPositions[positionKey].container = newContainerPos;
+
+                        // Write to local cache immediately so refresh restores correct position
+                        const localCacheKey = `glitchdraft_pos_${currentSite}`;
+                        chrome.storage.local.set({ [localCacheKey]: uiPositions[positionKey] });
+                        lastKnownPositionsHash = JSON.stringify(uiPositions[positionKey]);
+                        
+                        // Save to Firestore
+                        chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
+                            if (response && response.success) {
+                                showNotification('Position & size saved!', '', 'success');
+                            } else {
+                                console.error('Position save failed:', response?.message);
+                            }
+                            // Allow remote sync again after 3s grace period
+                            localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
+                        });
                     });
-                });
+                }, 300);
             }
             hasMoved = false;
         }
@@ -1625,86 +1654,182 @@
             
             // Only save position if actually moved
             if (toggleHasMoved) {
+                // Snapshot position NOW (before async)
+                // Store edge-anchored distances so position is reproduced accurately on any screen size
                 const toggleRect = ui.toggleButton.getBoundingClientRect();
                 const currentSite = window.location.hostname;
                 const positionKey = `uiPositions_${currentSite}`;
+                const newTogglePos = positionToEdgeAnchored(
+                    toggleRect.left,
+                    toggleRect.top,
+                    ui.toggleButton.offsetWidth  || 38,
+                    ui.toggleButton.offsetHeight || 38
+                );
                 
                 // Block remote sync from overwriting while we save
                 localPositionDirty = true;
                 clearTimeout(localPositionDirtyTimeout);
-                
-                // Get current settings
-                chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
-                    if (!settingsResponse || !settingsResponse.success) {
-                        localPositionDirty = false;
-                        return;
-                    }
-                    
-                    const uiPositions = settingsResponse.settings.uiPositions || {};
-                    uiPositions[positionKey] = uiPositions[positionKey] || {};
-                    uiPositions[positionKey].toggle = {
-                        left: toggleRect.left,
-                        top: toggleRect.top
-                    };
-                    
-                    // Save to Firestore
-                    chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
-                        if (response && response.success) {
-                            showNotification('Button position saved!', '', 'success');
-                        } else {
-                            console.error('Position save failed:', response?.message);
+                clearTimeout(dragSaveTimeout);
+
+                // Debounce: wait 300ms so rapid drags only fire one save
+                dragSaveTimeout = setTimeout(() => {
+                    // Get current settings
+                    chrome.runtime.sendMessage({ action: 'getSettings' }, (settingsResponse) => {
+                        if (!settingsResponse || !settingsResponse.success) {
+                            localPositionDirty = false;
+                            return;
                         }
-                        // Allow remote sync again after 3s grace period
-                        localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
+                        
+                        const uiPositions = settingsResponse.settings.uiPositions || {};
+                        uiPositions[positionKey] = uiPositions[positionKey] || {};
+                        uiPositions[positionKey].toggle = newTogglePos;
+
+                        // Write to local cache immediately so refresh restores correct position
+                        const localCacheKey = `glitchdraft_pos_${currentSite}`;
+                        chrome.storage.local.set({ [localCacheKey]: uiPositions[positionKey] });
+                        lastKnownPositionsHash = JSON.stringify(uiPositions[positionKey]);
+                        
+                        // Save to Firestore
+                        chrome.runtime.sendMessage({ action: 'saveSettings', settings: { uiPositions } }, (response) => {
+                            if (response && response.success) {
+                                showNotification('Button position saved!', '', 'success');
+                            } else {
+                                console.error('Position save failed:', response?.message);
+                            }
+                            // Allow remote sync again after 3s grace period
+                            localPositionDirtyTimeout = setTimeout(() => { localPositionDirty = false; }, 3000);
+                        });
                     });
-                });
+                }, 300);
             }
             toggleHasMoved = false;
         }
     }
 
+    // Convert a bounding rect position to an edge-anchored position object.
+    // We measure distance from the NEAREST horizontal edge (left vs right) and
+    // NEAREST vertical edge (top vs bottom).  This way the widget "sticks" to
+    // the same corner on every device, regardless of screen size.
+    function positionToEdgeAnchored(left, top, elementWidth, elementHeight) {
+        const distFromRight  = window.innerWidth  - left - elementWidth;
+        const distFromBottom = window.innerHeight - top  - elementHeight;
+        const anchorH = distFromRight < left ? 'right' : 'left';
+        const anchorV = distFromBottom < top ? 'bottom' : 'top';
+        return {
+            anchorH,
+            anchorV,
+            [anchorH]: anchorH === 'right'  ? distFromRight  : left,
+            [anchorV]: anchorV === 'bottom' ? distFromBottom : top,
+            width:  elementWidth,
+            height: elementHeight,
+            unit: 'edge'
+        };
+    }
+
+    // Apply an edge-anchored position to an element, without clamping.
+    function applyEdgePosition(el, pos, defaultWidth, defaultHeight) {
+        const w = pos.width  || defaultWidth  || el.offsetWidth  || 350;
+        const h = pos.height || defaultHeight || el.offsetHeight || 38;
+
+        let left, top;
+        if (pos.anchorH === 'right') {
+            left = window.innerWidth - w - (pos.right || 0);
+        } else {
+            left = pos.left || 0;
+        }
+        if (pos.anchorV === 'bottom') {
+            top = window.innerHeight - h - (pos.bottom || 0);
+        } else {
+            top = pos.top || 0;
+        }
+
+        el.style.left   = left + 'px';
+        el.style.top    = top  + 'px';
+        el.style.right  = 'auto';
+        el.style.bottom = 'auto';
+    }
+
+    function applyPositionsToUI(positions) {
+        if (!positions) return;
+        isApplyingRemoteResize = true;
+        if (positions.container) {
+            const c = positions.container;
+            if (c.unit === 'edge') {
+                // New edge-anchored format
+                applyEdgePosition(ui.container, c, 350, 500);
+                if (c.width) {
+                    ui.container.style.width = c.width + 'px';
+                    lastSavedWidth = c.width;
+                }
+                if (c.height) {
+                    ui.container.style.height = c.height + 'px';
+                    lastSavedHeight = c.height;
+                }
+            } else {
+                // Legacy: percent or raw px — convert and apply without clamping
+                const isPercent = c.unit === 'percent';
+                const left = isPercent ? c.left * window.innerWidth  : c.left;
+                const top  = isPercent ? c.top  * window.innerHeight : c.top;
+                ui.container.style.left   = left + 'px';
+                ui.container.style.top    = top  + 'px';
+                ui.container.style.right  = 'auto';
+                ui.container.style.bottom = 'auto';
+                if (c.width) {
+                    ui.container.style.width = c.width + 'px';
+                    lastSavedWidth = c.width;
+                }
+                if (c.height) {
+                    ui.container.style.height = c.height + 'px';
+                    lastSavedHeight = c.height;
+                }
+            }
+        }
+        if (positions.toggle) {
+            const t = positions.toggle;
+            if (t.unit === 'edge') {
+                applyEdgePosition(ui.toggleButton, t, 38, 38);
+            } else {
+                const isPercent = t.unit === 'percent';
+                const left = isPercent ? t.left * window.innerWidth  : t.left;
+                const top  = isPercent ? t.top  * window.innerHeight : t.top;
+                ui.toggleButton.style.left   = left + 'px';
+                ui.toggleButton.style.top    = top  + 'px';
+                ui.toggleButton.style.right  = 'auto';
+                ui.toggleButton.style.bottom = 'auto';
+            }
+        }
+        setTimeout(() => { isApplyingRemoteResize = false; }, 100);
+    }
+
     function loadPositions() {
         const currentSite = window.location.hostname;
         const positionKey = `uiPositions_${currentSite}`;
-        
-        chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
-            if (!response || !response.success) return;
-            
-            const positions = response.settings.uiPositions[positionKey];
-            if (!positions) return;
-            
-            // Set flag to prevent resize observer from triggering
-            isApplyingRemoteResize = true;
-            
-            if (positions.container) {
-                ui.container.style.left = positions.container.left + 'px';
-                ui.container.style.top = positions.container.top + 'px';
-                ui.container.style.right = 'auto';
-                ui.container.style.bottom = 'auto';
-                if (positions.container.width) {
-                    ui.container.style.width = positions.container.width + 'px';
-                    lastSavedWidth = positions.container.width;
-                }
-                if (positions.container.height) {
-                    ui.container.style.height = positions.container.height + 'px';
-                    lastSavedHeight = positions.container.height;
-                }
+        const localCacheKey = `glitchdraft_pos_${currentSite}`;
+
+        // 1. Apply cached positions instantly (no flash)
+        chrome.storage.local.get(localCacheKey, (cached) => {
+            const cachedPositions = cached[localCacheKey];
+            if (cachedPositions) {
+                applyPositionsToUI(cachedPositions);
+                lastKnownPositionsHash = JSON.stringify(cachedPositions);
             }
-            
-            if (positions.toggle) {
-                ui.toggleButton.style.left = positions.toggle.left + 'px';
-                ui.toggleButton.style.top = positions.toggle.top + 'px';
-                ui.toggleButton.style.right = 'auto';
-                ui.toggleButton.style.bottom = 'auto';
-            }
-            
-            // Initialize position hash for real-time sync
-            lastKnownPositionsHash = JSON.stringify(positions || {});
-            
-            // Reset flag after a short delay
-            setTimeout(() => {
-                isApplyingRemoteResize = false;
-            }, 100);
+
+            // 2. Then fetch from Firestore and update if different
+            chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
+                if (!response || !response.success) return;
+                const positions = response.settings.uiPositions?.[positionKey];
+                if (!positions) return;
+
+                // Update local cache
+                chrome.storage.local.set({ [localCacheKey]: positions });
+
+                // Only re-apply if different from what we already applied
+                const remoteHash = JSON.stringify(positions);
+                if (remoteHash !== lastKnownPositionsHash) {
+                    applyPositionsToUI(positions);
+                    lastKnownPositionsHash = remoteHash;
+                }
+            });
         });
     }
 
@@ -2963,6 +3088,8 @@
         
         // Start real-time sync polling
         startRealtimeSync();
+        // Start real-time position listener (content-script based, no SW limit)
+        startPositionListener();
     }
     
     // Real-time sync: Poll Firestore for changes every 3 seconds
@@ -2970,6 +3097,102 @@
     let lastKnownPositionsHash = '';
     let isFirstPositionLoad = true;
     let syncInterval = null;
+
+    // ---- Firestore real-time position listener (runs in content script, no SW limit) ----
+    let positionListenerAbort = null;
+
+    async function startPositionListener() {
+        // Stop any existing listener
+        if (positionListenerAbort) {
+            positionListenerAbort.abort();
+            positionListenerAbort = null;
+        }
+
+        // Get Firebase config from storage
+        const data = await new Promise(resolve => chrome.storage.local.get(['firebaseConfig'], resolve));
+        const cfg = data.firebaseConfig;
+        if (!cfg) return; // Config not set yet
+
+        const listenUrl = `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/(default)/documents:listen?key=${cfg.apiKey}`;
+        const body = JSON.stringify({
+            addTarget: {
+                documents: { documents: [`projects/${cfg.projectId}/databases/(default)/documents/settings/user`] },
+                targetId: 1
+            }
+        });
+
+        const controller = new AbortController();
+        positionListenerAbort = controller;
+
+        try {
+            const response = await fetch(listenUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                signal: controller.signal
+            });
+
+            if (!response.ok || !response.body) return;
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                // Split on newlines — each JSON object is on its own line(s)
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // Keep incomplete last chunk
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || trimmed === '[' || trimmed === ']' || trimmed === ',') continue;
+                    // Strip leading comma if present (array stream format)
+                    const jsonStr = trimmed.startsWith(',') ? trimmed.slice(1) : trimmed;
+                    try {
+                        const evt = JSON.parse(jsonStr);
+                        // documentChange event contains the updated document
+                        const doc = evt?.documentChange?.document;
+                        if (!doc) continue;
+
+                        const uiPositions = JSON.parse(doc.fields?.uiPositions?.stringValue || '{}');
+                        const currentSite = window.location.hostname;
+                        const positionKey = `uiPositions_${currentSite}`;
+                        const sitePositions = uiPositions[positionKey];
+                        if (!sitePositions) continue;
+
+                        const remoteHash = JSON.stringify(sitePositions);
+                        if (remoteHash === lastKnownPositionsHash) continue; // No change
+
+                        // Skip if we just saved locally (avoid snap-back)
+                        if (localPositionDirty) continue;
+
+                        lastKnownPositionsHash = remoteHash;
+
+                        // Update local cache
+                        const localCacheKey = `glitchdraft_pos_${currentSite}`;
+                        chrome.storage.local.set({ [localCacheKey]: sitePositions });
+
+                        // Apply positions
+                        applyPositionsToUI(sitePositions);
+                    } catch (_) { /* ignore parse errors */ }
+                }
+            }
+        } catch (err) {
+            if (err.name === 'AbortError') return; // Intentionally stopped
+            // Reconnect after 5s on unexpected error
+            setTimeout(() => startPositionListener(), 5000);
+        }
+
+        // Stream ended unexpectedly — reconnect
+        if (!controller.signal.aborted) {
+            setTimeout(() => startPositionListener(), 3000);
+        }
+    }
+    // ---- End position listener ----
     
     function startRealtimeSync() {
         // Clear existing interval if any
@@ -3023,36 +3246,13 @@
                     if (isRealChange) {
                         showNotification('UI position synced from another device', '', 'success');
                     }
+
+                    // Update local cache so next refresh restores this remote position
+                    const localCacheKey = `glitchdraft_pos_${currentSite}`;
+                    chrome.storage.local.set({ [localCacheKey]: sitePositions });
                     
-                    // Set flag to prevent resize observer from triggering
-                    isApplyingRemoteResize = true;
-                    
-                    // Apply new positions with px units
-                    if (sitePositions.container) {
-                        ui.container.style.left = sitePositions.container.left + 'px';
-                        ui.container.style.top = sitePositions.container.top + 'px';
-                        ui.container.style.right = 'auto';
-                        ui.container.style.bottom = 'auto';
-                        if (sitePositions.container.width) {
-                            ui.container.style.width = sitePositions.container.width + 'px';
-                            lastSavedWidth = sitePositions.container.width;
-                        }
-                        if (sitePositions.container.height) {
-                            ui.container.style.height = sitePositions.container.height + 'px';
-                            lastSavedHeight = sitePositions.container.height;
-                        }
-                    }
-                    if (sitePositions.toggle) {
-                        ui.toggleButton.style.left = sitePositions.toggle.left + 'px';
-                        ui.toggleButton.style.top = sitePositions.toggle.top + 'px';
-                        ui.toggleButton.style.right = 'auto';
-                        ui.toggleButton.style.bottom = 'auto';
-                    }
-                    
-                    // Reset flag after a short delay
-                    setTimeout(() => {
-                        isApplyingRemoteResize = false;
-                    }, 100);
+                    // Apply via shared helper (handles percent→px conversion and clamping)
+                    applyPositionsToUI(sitePositions);
                 }
             });
         }, 2000); // Poll every 2 seconds for faster sync

@@ -1,0 +1,358 @@
+
+.saved-messages-container {
+    position: fixed;
+    right: 20px;
+    bottom: 100px;
+    width: 350px;
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    z-index: 9999;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: 500px;
+    border: 1px solid #e4e6eb;
+    transition: all 0.3s ease;
+}
+
+.saved-messages-header {
+    padding: 14px 16px;
+    background-color: #0084ff;
+    color: white;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: move;
+}
+
+.saved-messages-close {
+    cursor: pointer;
+    font-size: 20px;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+
+.saved-messages-close:hover {
+    opacity: 1;
+}
+
+.saved-messages-body {
+    padding: 16px;
+    overflow-y: auto;
+    flex-grow: 1;
+    scrollbar-width: thin;
+    scrollbar-color: #c1c1c1 #f1f1f1;
+}
+
+.saved-messages-body::-webkit-scrollbar {
+    width: 8px;
+}
+
+.saved-messages-body::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.saved-messages-body::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+.saved-messages-body::-webkit-scrollbar-thumb:hover {
+    background: #a1a1a1;
+}
+
+.saved-messages-item {
+    margin-bottom: 15px;
+    padding: 12px;
+    background-color: #f0f2f5;
+    border-radius: 12px;
+    position: relative;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.saved-messages-item:hover {
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+    transform: translateY(-2px);
+}
+
+.saved-messages-timestamp {
+    font-size: 10px;
+    color: #65676B;
+    margin-top: 6px;
+    margin-bottom: 8px;
+}
+
+.saved-messages-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    justify-content: flex-end;
+}
+
+.saved-messages-actions button {
+    padding: 4px 8px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.saved-message-use {
+    background-color: #0084ff;
+    color: white;
+}
+
+.saved-message-delete {
+    background-color: #f44336;
+    color: white;
+}
+
+.saved-messages-input {
+    padding: 14px 16px;
+    display: flex;
+    gap: 10px;
+    border-top: 1px solid #e4e6eb;
+    background-color: #f8f9fa;
+}
+
+.saved-messages-input .message-input-div {
+    flex-grow: 1;
+    border: 1px solid #e4e6eb;
+    border-radius: 20px;
+    padding: 10px 14px;
+    min-height: 40px;
+    max-height: 220px;
+    overflow-y: auto;
+    background-color: white;
+    user-select: text;
+    white-space: pre-wrap;
+    word-break: break-word;
+    transition: border-color 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.message-input-div:focus {
+    border-color: #0084ff;
+    outline: none;
+    box-shadow: 0 1px 5px rgba(0,132,255,0.2);
+}
+
+.message-input-div:empty:before {
+    content: attr(data-placeholder);
+    color: #999;
+    pointer-events: none;
+}
+
+.saved-messages-input .message-input-div img,
+.saved-messages-item img {
+    max-width: 100%;
+    max-height: 200px;
+    display: block;
+    border-radius: 8px;
+    margin: 8px 0;
+    object-fit: contain;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Improve text readability */
+.saved-messages-item div:first-child {
+    line-height: 1.5;
+    font-size: 14px;
+    word-break: break-word;
+}
+
+/* Style links in saved messages */
+.saved-messages-item a {
+    color: #0084ff;
+    text-decoration: none;
+}
+
+.saved-messages-item a:hover {
+    text-decoration: underline;
+}
+
+.saved-messages-input button {
+    background-color: #0084ff;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 20px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    transition: transform 0.2s, background-color 0.2s;
+}
+
+.saved-messages-input button:hover {
+    background-color: #0078e7;
+    transform: scale(1.05);
+}
+
+.saved-messages-toggle {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 50px;
+    height: 50px;
+    background-color: #0084ff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 24px;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    z-index: 9999;
+}
+
+.saved-messages-category {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e4e6eb;
+}
+
+.saved-messages-category-title {
+    font-weight: bold;
+    margin-bottom: 8px;
+}
+
+.hidden {
+    display: none;
+}
+
+.keyboard-shortcut {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 5px;
+    background-color: #f0f2f5;
+    border-radius: 4px;
+    font-size: 10px;
+    color: #65676B;
+}
+
+.saved-messages-menu {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background-color: #f0f2f5;
+    border-bottom: 1px solid #e4e6eb;
+}
+
+.saved-messages-menu button {
+    border: none;
+    background-color: transparent;
+    color: #0084ff;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 4px 8px;
+}
+
+.saved-messages-menu button:hover {
+    text-decoration: underline;
+}
+
+.file-input-hidden {
+    display: none;
+}
+
+.saved-messages-sync-status {
+    padding: 10px 16px;
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #e4e6eb;
+}
+
+.saved-messages-sync-status .status {
+    margin-top: 5px;
+    font-size: 12px;
+    color: #666;
+}
+
+.saved-messages-sync-status .success {
+    color: #4caf50;
+}
+
+.saved-messages-sync-status .error {
+    color: #f44336;
+}
+
+.saved-messages-sync-status .warning {
+    color: #ff9800;
+}
+
+.saved-messages-sync-status .sync-info {
+    margin-top: 5px;
+    font-size: 11px;
+    color: #999;
+}
+
+.saved-messages-sync-status .auth-button {
+    background-color: #34a853;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 8px;
+    font-size: 12px;
+}
+
+.saved-messages-sync-status .auth-button:hover {
+    background-color: #2d8a46;
+}
+
+.saved-messages-sync-status .auth-button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+.sync-progress-container {
+    width: 100%;
+    height: 4px;
+    background-color: #f1f1f1;
+    border-radius: 2px;
+    margin-top: 8px;
+    overflow: hidden;
+}
+
+.sync-progress-bar {
+    height: 100%;
+    width: 0%;
+    background-color: #4285f4;
+    border-radius: 2px;
+    transition: width 0.3s ease-in-out;
+}
+
+.saved-messages-notification {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    background-color: #333;
+    color: white;
+    padding: 4px 10px;
+    border-radius: 3px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    z-index: 10001;
+    font-size: 11px;
+    line-height: 1.2;
+    opacity: 0;
+    transform: translateY(-5px);
+    transition: all 0.15s ease;
+    max-width: 180px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.saved-messages-notification.visible {
+    opacity: 0.9;
+    transform: translateY(0);
+}

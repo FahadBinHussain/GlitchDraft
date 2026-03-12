@@ -1,0 +1,4 @@
+-keep class com.fahad.glitchdraft.lsposed.hook.GlitchDraftHook { *; }
+-keep class de.robv.android.xposed.** { *; }
+-keepattributes *Annotation*
+-dontwarn de.robv.android.xposed.**

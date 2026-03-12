@@ -1,1 +1,26 @@
 extension/key.pem
+
+# ── LSPosed module – Android / Gradle build artifacts ──────────────────────
+lsposed-module/.gradle/
+lsposed-module/build/
+lsposed-module/app/build/
+lsposed-module/local.properties
+lsposed-module/.idea/
+lsposed-module/*.iml
+lsposed-module/**/*.iml
+
+# Generated APKs / AABs
+lsposed-module/**/*.apk
+lsposed-module/**/*.aab
+
+# Keystore files (never commit signing keys)
+lsposed-module/**/*.jks
+lsposed-module/**/*.keystore
+
+# Gradle wrapper JARs (download on demand)
+lsposed-module/gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio misc
+lsposed-module/.DS_Store
+lsposed-module/captures/
+lsposed-module/lint-results*

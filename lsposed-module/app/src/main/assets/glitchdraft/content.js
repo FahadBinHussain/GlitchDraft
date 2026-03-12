@@ -10,10 +10,10 @@
     let whatsappCurrentChatId = null;
     let whatsappChatObserver = null;
 
-    // Load initial config from Firestore (with local cache fallback during load)
-    chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
-        if (response && response.success && response.settings?.appConfig) {
-            Object.assign(config, response.settings.appConfig);
+    // Load initial config from storage
+    chrome.storage.local.get('config', (result) => {
+        if (result.config) {
+            Object.assign(config, result.config);
         }
         // Re-initialize UI elements that depend on config if needed
         const debugToggleButton = document.querySelector('button[title="Toggle debug mode"]');
@@ -22,15 +22,9 @@
         }
     });
 
-    // Save app config to Firestore settings
+    // Save debug mode setting
     function saveConfig() {
-        chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
-            const currentSettings = (response && response.success) ? response.settings : {};
-            chrome.runtime.sendMessage({
-                action: 'saveSettings',
-                settings: { uiPositions: currentSettings.uiPositions || {}, appConfig: config }
-            });
-        });
+        chrome.storage.local.set({ config: config });
     }
 
     // Add complete CSS with theme system
@@ -634,89 +628,6 @@
         return sanitizedUrl || 'default_page';
     }
 
-    // Function to get the display name of the current conversation partner / group
-    function getCurrentChatName() {
-        const url = window.location.href;
-
-        // ── Messenger (messenger.com / facebook.com) ──
-        if (url.includes('messenger.com') || url.match(/facebook\.com.*\/t\//)) {
-            // Messenger uses obfuscated CSS class names, so we target by structure/role.
-            // Strategy 1: find the span with the contact name class observed in DevTools.
-            //   The span has class "x1c1uobl" among others (Messenger-specific heading span).
-            const candidateByClass = document.querySelector('span.x1c1uobl');
-            if (candidateByClass) {
-                const name = candidateByClass.textContent?.trim();
-                if (name && name.length > 0 && name.length < 200) return name;
-            }
-
-            // Strategy 2: look for a heading inside the thread/conversation header area
-            const headerSelectors = [
-                'div[role="main"] h1',
-                'div[role="main"] h2',
-                'div[data-testid="conversation-title"] span',
-                'header h1',
-                'header h2',
-            ];
-            for (const sel of headerSelectors) {
-                const el = document.querySelector(sel);
-                const name = el?.textContent?.trim();
-                if (name && name.length > 0 && name.length < 200) return name;
-            }
-
-            // Strategy 3: document title (Messenger sets title to the contact name)
-            const titleMatch = document.title.match(/^(.+?)(?:\s*[\|\-–].*)?$/);
-            if (titleMatch && titleMatch[1] && titleMatch[1] !== 'Messenger' && titleMatch[1] !== 'Facebook') {
-                return titleMatch[1].trim();
-            }
-            return null;
-        }
-
-        // ── WhatsApp Web ──
-        if (url.includes('web.whatsapp.com')) {
-            const selectors = [
-                'header[data-testid="conversation-header"] span[data-testid="conversation-info-header-chat-title"]',
-                'header[data-testid="conversation-header"] span[dir="auto"]',
-                'div[data-testid="conversation-panel-wrapper"] header span[title]',
-                'span[data-testid="conversation-info-header-chat-title"]',
-            ];
-            for (const sel of selectors) {
-                const el = document.querySelector(sel);
-                const name = el?.getAttribute('title') || el?.textContent?.trim();
-                if (name && name.length > 0 && name.length < 200) return name;
-            }
-            return null;
-        }
-
-        // ── Discord ──
-        if (url.includes('discord.com')) {
-            const selectors = [
-                // DM header name
-                'section[aria-label] h3[class*="username"]',
-                'div[class*="headerContent"] h1',
-                // Channel name in header
-                'div[class*="title-"] h3',
-                'h3[class*="header-"]',
-                // Sidebar active channel
-                'a[class*="selected"] div[class*="name"]',
-            ];
-            for (const sel of selectors) {
-                const el = document.querySelector(sel);
-                const name = el?.textContent?.trim();
-                if (name && name.length > 0 && name.length < 200) return name;
-            }
-            // Fallback: document title (Discord sets "<ChannelName> | Discord")
-            const titleMatch = document.title.match(/^@?([^|]+?)\s*\|/);
-            if (titleMatch) return titleMatch[1].trim();
-            return null;
-        }
-
-        // ── Generic fallback ──
-        // Try to infer a human-readable name from the page title
-        const title = document.title?.trim();
-        if (title && title.length > 0 && title.length < 200) return title;
-        return null;
-    }
-
     // WhatsApp-specific chat detection
     function getWhatsAppChatId() {
         // Return cached chat ID if available
@@ -877,14 +788,7 @@
         const chatIdDisplay = document.getElementById('chatIdDisplay');
         if (chatIdDisplay) {
             const chatId = getCurrentChatId();
-            const chatName = getCurrentChatName();
-            if (chatName) {
-                chatIdDisplay.textContent = `${chatName} (${chatId || 'Unknown'})`;
-                chatIdDisplay.title = `ID: ${chatId || 'Unknown'}`;
-            } else {
-                chatIdDisplay.textContent = `Chat ID: ${chatId || 'Unknown'}`;
-                chatIdDisplay.title = '';
-            }
+            chatIdDisplay.textContent = `Chat ID: ${chatId || 'Unknown'}`;
         }
     }
 
@@ -2039,7 +1943,7 @@
             });
 
             // Save to Firestore
-            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages, contactName: getCurrentChatName() }, (saveResponse) => {
+            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages }, (saveResponse) => {
                 if (saveResponse && saveResponse.success) {
                     console.log('Message saved to Firestore');
                     messageInput.innerHTML = '';
@@ -2686,7 +2590,7 @@
             savedMessages[messageIndex].html = newContent.replace(/\n/g, '<br>');
             
             // Save updated list to Firestore
-            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages, contactName: getCurrentChatName() }, (saveResponse) => {
+            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages }, (saveResponse) => {
                 if (saveResponse && saveResponse.success) {
                     console.log('Message updated in Firestore');
                     loadSavedMessages();
@@ -2720,7 +2624,7 @@
             savedMessages.splice(messageIndex, 1);
 
             // Save updated list to Firestore
-            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages, contactName: getCurrentChatName() }, (saveResponse) => {
+            chrome.runtime.sendMessage({ action: 'saveDraft', chatId: chatId, messages: savedMessages }, (saveResponse) => {
                 if (saveResponse && saveResponse.success) {
                     console.log('Message deleted from Firestore');
                     loadSavedMessages();
@@ -2853,33 +2757,27 @@
 
     // Function to export all saved messages
     function exportSavedMessages() {
-        const draftsPromise = new Promise((resolve) => {
-            chrome.runtime.sendMessage({ action: 'getAllDrafts' }, resolve);
-        });
-        const settingsPromise = new Promise((resolve) => {
-            chrome.runtime.sendMessage({ action: 'getSettings' }, resolve);
-        });
-
-        Promise.all([draftsPromise, settingsPromise]).then(([draftsResponse, settingsResponse]) => {
-            if (!draftsResponse || !draftsResponse.success) {
-                alert('Export failed: ' + (draftsResponse?.message || 'Could not reach Firestore'));
+        // chrome.storage.local.get(null) gets all items
+        chrome.storage.local.get(null, async (allData) => {
+            if (Object.keys(allData).length === 0) {
+                alert('No data found to export.');
                 return;
             }
 
-            const firestoreDrafts = draftsResponse.drafts || {};
-            const firestoreSettings = (settingsResponse && settingsResponse.success) ? settingsResponse.settings : {};
+            // Trigger a sync before exporting to ensure latest data
+            try {
+                await chrome.runtime.sendMessage({ action: 'sync' });
+                console.log('Sync completed before export');
+            } catch (error) {
+                console.warn('Sync before export failed:', error);
+                // Continue with export even if sync fails
+            }
 
-            const exportData = {
-                exportedAt: new Date().toISOString(),
-                draftCount: Object.keys(firestoreDrafts).length,
-                drafts: firestoreDrafts,
-                settings: {
-                    appConfig: firestoreSettings.appConfig || {},
-                    uiPositions: firestoreSettings.uiPositions || {}
-                }
-            };
-
-            downloadJSON(exportData, 'glitchdraft_export_' + Date.now() + '.json');
+            // Get fresh data after sync
+            chrome.storage.local.get(null, (syncedData) => {
+                // All data including messages and settings will be exported
+                downloadJSON(syncedData, 'messenger_saved_messages_and_settings.json');
+            });
         });
     }
 

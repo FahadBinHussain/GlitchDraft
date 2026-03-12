@@ -1,0 +1,61 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+// Auto-increment versionCode with every build using epoch seconds.
+// LSPosed compares versionCode to detect module updates and show the
+// "module needs reboot" notification in LSPosed Manager.
+def buildTime = (int)(System.currentTimeMillis() / 1000L)
+
+android {
+    namespace = "com.fahad.glitchdraft.lsposed"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.fahad.glitchdraft.lsposed"
+        minSdk = 26           // Android 8.0+ (LSPosed / EdXposed baseline)
+        targetSdk = 34
+        versionCode buildTime
+        versionName "1.1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+
+    // Package the JS/CSS assets inside the APK so the hook can read them at runtime
+    sourceSets {
+        main {
+            assets.srcDirs = ["src/main/assets"]
+        }
+    }
+}
+
+dependencies {
+    // LSPosed / XposedBridge API – compile-only (provided by the framework at runtime)
+    // Hosted on JitPack: https://jitpack.io/#rovo89/XposedBridge
+    compileOnly("de.robv.android.xposed:api:82")
+
+    // UI dependencies for the settings Activity and overlay panel
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.annotation:annotation:1.7.1")
+    implementation("com.google.android.material:material:1.11.0")
+
+    // Coroutines for async Firestore calls in DraftRepository
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+}

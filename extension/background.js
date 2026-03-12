@@ -11,13 +11,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === "saveDraft") {
-        console.log('[BACKGROUND] Saving draft for chatId:', request.chatId, 'messages:', request.messages?.length);
-        handleUpload(request.chatId, request.messages).then(sendResponse);
+        console.log('[BACKGROUND] Saving draft for chatId:', request.chatId, 'messages:', request.messages?.length, 'contactName:', request.contactName);
+        handleUpload(request.chatId, request.messages, request.contactName).then(sendResponse);
         return true;
     }
     if (request.action === "getDraft") {
         console.log('[BACKGROUND] Getting draft for chatId:', request.chatId);
         handleGet(request.chatId).then(sendResponse);
+        return true;
+    }
+    if (request.action === "getAllDrafts") {
+        handleGetAllDrafts().then(sendResponse);
         return true;
     }
     if (request.action === "deleteDraft") {
@@ -85,15 +89,24 @@ async function handleGet(chatId) {
     }
 }
 
-async function handleUpload(chatId, messages) {
-    console.log('[BACKGROUND] handleUpload called, chatId:', chatId, 'messages:', messages);
+async function handleUpload(chatId, messages, contactName) {
+    console.log('[BACKGROUND] handleUpload called, chatId:', chatId, 'messages:', messages, 'contactName:', contactName);
     try {
-        await firestoreService.saveDraft(chatId, messages);
+        await firestoreService.saveDraft(chatId, messages, contactName);
         await chrome.storage.local.set({ lastSyncTime: Date.now() });
         console.log('[BACKGROUND] Save successful');
         return { success: true };
     } catch (error) {
         console.error('[BACKGROUND] Save error:', error);
+        return { success: false, message: error.message };
+    }
+}
+
+async function handleGetAllDrafts() {
+    try {
+        const drafts = await firestoreService.getAllDrafts();
+        return { success: true, drafts };
+    } catch (error) {
         return { success: false, message: error.message };
     }
 }

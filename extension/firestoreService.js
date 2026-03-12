@@ -10,13 +10,20 @@ class FirestoreService {
         }
         return this.config;
     }
-    async saveDraft(threadId, messages) {
+    async saveDraft(threadId, messages, contactName) {
         const config = await this.getConfig();
         const url = "https://firestore.googleapis.com/v1/projects/" + config.projectId + "/databases/(default)/documents/drafts/" + threadId + "?key=" + config.apiKey;
         const msgsArray = messages.map(m => ({
             mapValue: { fields: { html: { stringValue: m.html || "" }, timestamp: { integerValue: String(m.timestamp || Date.now()) } } }
         }));
-        const response = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: { messages: { arrayValue: { values: msgsArray } }, lastModified: { integerValue: String(Date.now()) } } }) });
+        const docFields = {
+            messages: { arrayValue: { values: msgsArray } },
+            lastModified: { integerValue: String(Date.now()) }
+        };
+        if (contactName) {
+            docFields.contactName = { stringValue: contactName };
+        }
+        const response = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: docFields }) });
         if (!response.ok) throw new Error("Save failed: " + response.status);
         return await response.json();
     }
@@ -39,18 +46,46 @@ class FirestoreService {
     async saveSettings(settings) {
         const config = await this.getConfig();
         const url = "https://firestore.googleapis.com/v1/projects/" + config.projectId + "/databases/(default)/documents/settings/user?key=" + config.apiKey;
-        const response = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: { uiPositions: { stringValue: JSON.stringify(settings.uiPositions || {}) } } }) });
+        const fields = {
+            uiPositions: { stringValue: JSON.stringify(settings.uiPositions || {}) },
+            appConfig: { stringValue: JSON.stringify(settings.appConfig || {}) }
+        };
+        const response = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
         if (!response.ok) throw new Error("Save settings failed: " + response.status);
         return await response.json();
+    }
+    async getAllDrafts() {
+        const config = await this.getConfig();
+        // List all documents in the drafts collection
+        const url = "https://firestore.googleapis.com/v1/projects/" + config.projectId + "/databases/(default)/documents/drafts?key=" + config.apiKey;
+        const response = await fetch(url);
+        if (response.status === 404) return {};
+        if (!response.ok) throw new Error("List drafts failed: " + response.status);
+        const data = await response.json();
+        const docs = data.documents || [];
+        const result = {};
+        for (const doc of docs) {
+            // Extract chat ID from document name (last path segment)
+            const chatId = doc.name.split('/').pop();
+            const messages = (doc.fields?.messages?.arrayValue?.values || []).map(v => ({
+                html: v.mapValue?.fields?.html?.stringValue || "",
+                timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0")
+            }));
+            const contactName = doc.fields?.contactName?.stringValue || null;
+            const lastModified = parseInt(doc.fields?.lastModified?.integerValue || "0");
+            result[chatId] = { messages, contactName, lastModified };
+        }
+        return result;
     }
     async getSettings() {
         const config = await this.getConfig();
         const url = "https://firestore.googleapis.com/v1/projects/" + config.projectId + "/databases/(default)/documents/settings/user?key=" + config.apiKey;
         const response = await fetch(url);
-        if (response.status === 404) return { uiPositions: {} };
+        if (response.status === 404) return { uiPositions: {}, appConfig: {} };
         if (!response.ok) throw new Error("Get settings failed: " + response.status);
         const doc = await response.json();
         const uiPositions = JSON.parse(doc.fields?.uiPositions?.stringValue || "{}");
-        return { uiPositions };
+        const appConfig = JSON.parse(doc.fields?.appConfig?.stringValue || "{}");
+        return { uiPositions, appConfig };
     }
 }

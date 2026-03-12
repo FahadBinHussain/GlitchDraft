@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.fahad.glitchdraft.lsposed">
+
+    <!-- Draw the floating overlay on top of other apps (in-process via OverlayController) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Network access for Firestore REST calls -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+        LSPosed / Xposed module declaration.
+        The meta-data tags below are read by LSPosed Manager to identify and
+        describe this module.  They must be in the <application> element.
+    -->
+    <application
+        android:label="@string/app_name"
+        android:description="@string/app_description"
+        android:icon="@drawable/ic_launcher"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GlitchDraft">
+
+        <!-- Tell the LSPosed framework this APK is an Xposed module -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+
+        <!-- Human-readable description shown in LSPosed Manager -->
+        <meta-data
+            android:name="xposeddescription"
+            android:value="GlitchDraft – injects the GlitchDraft draft-saver UI into Android WebView-based messaging apps (Messenger, WhatsApp Web, Discord, etc.) AND adds a floating native overlay for non-WebView app views." />
+
+        <!-- Minimum Xposed API version required (82 = XposedBridge 89+) -->
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+
+        <!--
+            xposedversion: shown in LSPosed Manager module list.
+            Kept in sync with versionName in app/build.gradle.
+        -->
+        <meta-data
+            android:name="xposedversion"
+            android:value="1.1.0" />
+
+        <!-- Settings / launcher activity -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:label="@string/app_name"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            ConfigProvider: serves the Firebase config (projectId + apiKey) to
+            hooked app processes via ContentResolver.query().
+            exported=true is required so Messenger/WhatsApp/Discord etc. can query it.
+        -->
+        <provider
+            android:name=".provider.ConfigProvider"
+            android:authorities="com.fahad.glitchdraft.lsposed.config"
+            android:exported="true"
+            android:readPermission="" />
+
+    </application>
+
+</manifest>

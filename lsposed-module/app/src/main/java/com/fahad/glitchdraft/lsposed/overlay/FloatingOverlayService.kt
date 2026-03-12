@@ -1,0 +1,269 @@
+package com.fahad.glitchdraft.lsposed.overlay
+
+import android.annotation.SuppressLint
+import android.app.Service
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.os.IBinder
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import com.fahad.glitchdraft.lsposed.R
+import com.fahad.glitchdraft.lsposed.data.DraftRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+/**
+ * FloatingOverlayService
+ *
+ * Draws a persistent system-window overlay (SYSTEM_ALERT_WINDOW) on top of
+ * any app in scope.  It renders two views:
+ *
+ *  1. A small floating toggle button (mimics the extension's saved-messages-toggle)
+ *  2. A draggable GlitchDraft panel (mimics the extension's saved-messages-container)
+ *
+ * Lifecycle:
+ *  - Started by GlitchDraftHook when the hooked app's first Activity is created.
+ *  - Stopped when the hooked app's process dies or the module is disabled.
+ *
+ * The panel talks to Firestore through DraftRepository (a Kotlin port of
+ * firestoreService.js + background.js) so drafts are synced identically to
+ * the browser extension.
+ */
+class FloatingOverlayService : Service() {
+
+    private lateinit var windowManager: WindowManager
+    private lateinit var toggleBtn: View
+    private lateinit var panel: View
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // Drag state
+    private var toggleInitX = 0; private var toggleInitY = 0
+    private var toggleTouchX = 0f; private var toggleTouchY = 0f
+    private var panelInitX = 0; private var panelInitY = 0
+    private var panelTouchX = 0f; private var panelTouchY = 0f
+
+    private var isPanelVisible = false
+    private val repo by lazy { DraftRepository(applicationContext) }
+
+    companion object {
+        const val EXTRA_CHAT_ID = "chat_id"
+        const val EXTRA_PACKAGE = "package_name"
+    }
+
+    // -------------------------------------------------------------------------
+    // Service lifecycle
+    // -------------------------------------------------------------------------
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        buildToggleButton()
+        buildPanel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Re-show if killed and restarted
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
+        runCatching { windowManager.removeView(toggleBtn) }
+        runCatching { windowManager.removeView(panel) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Build toggle button (floating FAB)
+    // -------------------------------------------------------------------------
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun buildToggleButton() {
+        toggleBtn = LayoutInflater.from(this).inflate(R.layout.overlay_toggle, null)
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            x = 24; y = 24
+        }
+
+        windowManager.addView(toggleBtn, params)
+
+        toggleBtn.setOnTouchListener(object : View.OnTouchListener {
+            var moved = false
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        moved = false
+                        toggleInitX = params.x; toggleInitY = params.y
+                        toggleTouchX = event.rawX; toggleTouchY = event.rawY
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = (toggleTouchX - event.rawX).toInt()
+                        val dy = (event.rawY - toggleTouchY).toInt()
+                        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) moved = true
+                        params.x = toggleInitX + dx
+                        params.y = toggleInitY + dy
+                        windowManager.updateViewLayout(toggleBtn, params)
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!moved) togglePanelVisibility()
+                    }
+                }
+                return true
+            }
+        })
+    }
+
+    // -------------------------------------------------------------------------
+    // Build GlitchDraft panel
+    // -------------------------------------------------------------------------
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun buildPanel() {
+        panel = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null)
+
+        val params = WindowManager.LayoutParams(
+            dpToPx(320),
+            dpToPx(480),
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            x = 24; y = 80
+        }
+
+        panel.visibility = View.GONE
+        windowManager.addView(panel, params)
+
+        // Close button
+        panel.findViewById<View>(R.id.btn_close)?.setOnClickListener {
+            togglePanelVisibility()
+        }
+
+        // Drag handle (header)
+        val header = panel.findViewById<View>(R.id.panel_header)
+        header?.setOnTouchListener(object : View.OnTouchListener {
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        panelInitX = params.x; panelInitY = params.y
+                        panelTouchX = event.rawX; panelTouchY = event.rawY
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        params.x = panelInitX + (panelTouchX - event.rawX).toInt()
+                        params.y = panelInitY + (event.rawY - panelTouchY).toInt()
+                        windowManager.updateViewLayout(panel, params)
+                    }
+                }
+                return true
+            }
+        })
+
+        // Save button
+        panel.findViewById<View>(R.id.btn_save_draft)?.setOnClickListener {
+            saveDraftFromPanel()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Panel toggle
+    // -------------------------------------------------------------------------
+
+    private fun togglePanelVisibility() {
+        isPanelVisible = !isPanelVisible
+        panel.visibility = if (isPanelVisible) View.VISIBLE else View.GONE
+
+        if (isPanelVisible) {
+            loadDraftsIntoPanel()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Draft operations (delegated to DraftRepository)
+    // -------------------------------------------------------------------------
+
+    private fun loadDraftsIntoPanel() {
+        val chatId = currentChatId() ?: return
+        val listContainer = panel.findViewById<LinearLayout>(R.id.draft_list) ?: return
+        listContainer.removeAllViews()
+
+        serviceScope.launch {
+                val drafts = repo.getDraft(chatId)
+                listContainer.removeAllViews()
+                if (drafts.isEmpty()) {
+                    val empty = TextView(this@FloatingOverlayService).apply {
+                        text = "No saved drafts for this chat"
+                        setTextColor(Color.parseColor("#65676B"))
+                        textSize = 13f
+                        setPadding(8, 8, 8, 8)
+                    }
+                    listContainer.addView(empty)
+                } else {
+                    drafts.forEach { draft -> addDraftItemView(listContainer, draft, chatId) }
+                }
+            }
+    }
+    private fun addDraftItemView(
+        container: LinearLayout,
+        draft: DraftRepository.Draft,
+        chatId: String
+    ) {
+        val item = LayoutInflater.from(this).inflate(R.layout.overlay_draft_item, container, false)
+        item.findViewById<TextView>(R.id.tv_draft_content)?.text =
+            android.text.Html.fromHtml(draft.html, android.text.Html.FROM_HTML_MODE_COMPACT)
+        item.findViewById<View>(R.id.btn_delete_draft)?.setOnClickListener {
+            serviceScope.launch {
+                repo.deleteDraft(chatId)
+                loadDraftsIntoPanel()
+            }
+        }
+        container.addView(item)
+    }
+
+    private fun saveDraftFromPanel() {
+        val chatId = currentChatId() ?: return
+        val input = panel.findViewById<EditText>(R.id.et_draft_input) ?: return
+        val text = input.text.toString().trim()
+        if (text.isEmpty()) return
+
+        serviceScope.launch {
+            val existing = repo.getDraft(chatId).toMutableList()
+            existing.add(DraftRepository.Draft(html = text, timestamp = System.currentTimeMillis()))
+            repo.saveDraft(chatId, existing)
+            input.text.clear()
+            loadDraftsIntoPanel()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /** Returns the current chat ID stored in SharedPreferences by the hook */
+    private fun currentChatId(): String? =
+        getSharedPreferences("glitchdraft_hook_state", MODE_PRIVATE)
+            .getString("current_chat_id", null)
+
+    private fun dpToPx(dp: Int): Int =
+        (dp * resources.displayMetrics.density).toInt()
+}

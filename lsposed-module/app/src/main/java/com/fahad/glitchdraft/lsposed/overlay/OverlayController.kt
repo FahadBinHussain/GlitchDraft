@@ -3,6 +3,7 @@ package com.fahad.glitchdraft.lsposed.overlay
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -19,6 +20,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -30,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
  * OverlayController
@@ -61,6 +64,11 @@ object OverlayController {
     private var draftInput: EditText? = null
     private var chatIdLabel: TextView? = null   // debug label in panel header
 
+    /** Icon bitmap loaded from module assets — set via setIcon() before attach(). */
+    private var iconBitmap: Bitmap? = null
+
+    fun setIcon(bitmap: Bitmap) { iconBitmap = bitmap }
+
     private var isPanelVisible = false
     private var isAttached = false
 
@@ -73,6 +81,14 @@ object OverlayController {
     private var togTouchX = 0f; private var togTouchY = 0f
     private var panInitX = 0; private var panInitY = 0
     private var panTouchX = 0f; private var panTouchY = 0f
+
+    // ----- stored window params for position persistence -------------------
+    private var toggleParams: WindowManager.LayoutParams? = null
+    private var panelParams: WindowManager.LayoutParams? = null
+
+    // Debounce handler for position saves
+    private val savePositionHandler = Handler(Looper.getMainLooper())
+    private val savePositionRunnable = Runnable { persistPositions() }
 
     // -------------------------------------------------------------------------
 
@@ -97,15 +113,22 @@ object OverlayController {
             windowManager = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
             // DraftRepository reads from module's device-protected prefs.
-            // We pass the activity context; DraftRepository internally calls
-            // createDeviceProtectedStorageContext() so it can always reach the
-            // module prefs even when the device is locked.
             repo = DraftRepository(activity.applicationContext)
 
-            buildToggle(activity)
-            buildPanel(activity)
-            isAttached = true
-            XposedBridge.log("$TAG: Overlay attached for $packageName")
+            // Load saved positions asynchronously, then build UI
+            scope.launch {
+                val savedPositions = try { repo!!.getSettings() } catch (_: Throwable) { null }
+                val togX = savedPositions?.optJSONObject("android_toggle")?.optInt("x", -1) ?: -1
+                val togY = savedPositions?.optJSONObject("android_toggle")?.optInt("y", -1) ?: -1
+                val panX = savedPositions?.optJSONObject("android_panel")?.optInt("x", -1) ?: -1
+                val panY = savedPositions?.optJSONObject("android_panel")?.optInt("y", -1) ?: -1
+                Handler(Looper.getMainLooper()).post {
+                    buildToggle(activity, if (togX >= 0) togX else -1, if (togY >= 0) togY else -1)
+                    buildPanel(activity, if (panX >= 0) panX else -1, if (panY >= 0) panY else -1)
+                    isAttached = true
+                    XposedBridge.log("$TAG: Overlay attached for $packageName (togPos=$togX,$togY panPos=$panX,$panY)")
+                }
+            }
         } catch (e: Throwable) {
             XposedBridge.log("$TAG: attach failed: $e")
         }
@@ -125,11 +148,31 @@ object OverlayController {
         isAttached = false
     }
 
+    /** Hide the toggle button (and panel) when the target app loses focus. */
+    fun hide() {
+        Handler(Looper.getMainLooper()).post {
+            toggleView?.visibility = View.GONE
+            if (isPanelVisible) {
+                panelView?.visibility = View.GONE
+            }
+        }
+    }
+
+    /** Show the toggle button again when the target app regains focus. */
+    fun show() {
+        Handler(Looper.getMainLooper()).post {
+            toggleView?.visibility = View.VISIBLE
+            if (isPanelVisible) {
+                panelView?.visibility = View.VISIBLE
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Build floating toggle button
     // -------------------------------------------------------------------------
 
-    private fun buildToggle(ctx: Context) {
+    private fun buildToggle(ctx: Context, savedX: Int = -1, savedY: Int = -1) {
         val size = dp(ctx, 50)
 
         // Circle background
@@ -144,15 +187,31 @@ object OverlayController {
             elevation = 8f
         }
 
-        val label = TextView(ctx).apply {
-            text = "📝"
-            textSize = 22f
-            gravity = Gravity.CENTER
+        val icon = iconBitmap
+        if (icon != null) {
+            // Use the extension PNG icon
+            val iv = ImageView(ctx).apply {
+                setImageBitmap(icon)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                val padding = dp(ctx, 8)
+                setPadding(padding, padding, padding, padding)
+            }
+            frame.addView(iv, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).also { it.gravity = Gravity.CENTER })
+        } else {
+            // Fallback: pencil emoji
+            val label = TextView(ctx).apply {
+                text = "📝"
+                textSize = 22f
+                gravity = Gravity.CENTER
+            }
+            frame.addView(label, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).also { it.gravity = Gravity.CENTER })
         }
-        frame.addView(label, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ).also { it.gravity = Gravity.CENTER })
 
         val params = WindowManager.LayoutParams(
             size, size,
@@ -160,9 +219,11 @@ object OverlayController {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.END
-            x = dp(ctx, 16); y = dp(ctx, 64)
+            gravity = Gravity.TOP or Gravity.START
+            x = if (savedX >= 0) savedX else dp(ctx, 16)
+            y = if (savedY >= 0) savedY else dp(ctx, 300)
         }
+        toggleParams = params
 
         frame.setOnTouchListener(object : View.OnTouchListener {
             var hasMoved = false
@@ -174,14 +235,17 @@ object OverlayController {
                         togTouchX = ev.rawX;  togTouchY = ev.rawY
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        val dx = (togTouchX - ev.rawX).toInt()
+                        val dx = (ev.rawX - togTouchX).toInt()
                         val dy = (ev.rawY - togTouchY).toInt()
                         if (Math.abs(dx) > 10 || Math.abs(dy) > 10) hasMoved = true
-                        params.x = togInitX + dx
-                        params.y = togInitY + dy
+                        params.x = (togInitX + dx).coerceAtLeast(0)
+                        params.y = (togInitY + dy).coerceAtLeast(0)
                         windowManager?.updateViewLayout(frame, params)
                     }
-                    MotionEvent.ACTION_UP -> { if (!hasMoved) togglePanel() }
+                    MotionEvent.ACTION_UP -> {
+                        if (!hasMoved) togglePanel()
+                        else scheduleSavePositions()  // save after drag ends
+                    }
                 }
                 return true
             }
@@ -195,7 +259,7 @@ object OverlayController {
     // Build GlitchDraft panel
     // -------------------------------------------------------------------------
 
-    private fun buildPanel(ctx: Context) {
+    private fun buildPanel(ctx: Context, savedX: Int = -1, savedY: Int = -1) {
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             val bg = GradientDrawable().apply {
@@ -311,9 +375,11 @@ object OverlayController {
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.END
-            x = dp(ctx, 16); y = dp(ctx, 120)
+            gravity = Gravity.TOP or Gravity.START
+            x = if (savedX >= 0) savedX else dp(ctx, 20)
+            y = if (savedY >= 0) savedY else dp(ctx, 200)
         }
+        panelParams = params
 
         root.visibility = View.GONE
         windowManager?.addView(root, params)
@@ -330,9 +396,12 @@ object OverlayController {
                         panTouchX = ev.rawX;  panTouchY = ev.rawY
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        params.x = panInitX + (panTouchX - ev.rawX).toInt()
-                        params.y = panInitY + (ev.rawY - panTouchY).toInt()
+                        params.x = (panInitX + (ev.rawX - panTouchX).toInt()).coerceAtLeast(0)
+                        params.y = (panInitY + (ev.rawY - panTouchY).toInt()).coerceAtLeast(0)
                         windowManager?.updateViewLayout(root, params)
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        scheduleSavePositions()  // save after panel drag ends
                     }
                 }
                 return true
@@ -358,6 +427,27 @@ object OverlayController {
     // -------------------------------------------------------------------------
     // Draft operations
     // -------------------------------------------------------------------------
+
+    private fun scheduleSavePositions() {
+        savePositionHandler.removeCallbacks(savePositionRunnable)
+        savePositionHandler.postDelayed(savePositionRunnable, 500L)
+    }
+
+    private fun persistPositions() {
+        val tp = toggleParams ?: return
+        val pp = panelParams ?: return
+        scope.launch {
+            try {
+                val current = repo?.getSettings() ?: JSONObject()
+                current.put("android_toggle", JSONObject().apply { put("x", tp.x); put("y", tp.y) })
+                current.put("android_panel", JSONObject().apply { put("x", pp.x); put("y", pp.y) })
+                repo?.saveSettings(current)
+                XposedBridge.log("$TAG: Positions saved toggle=(${tp.x},${tp.y}) panel=(${pp.x},${pp.y})")
+            } catch (e: Throwable) {
+                XposedBridge.log("$TAG: persistPositions failed: $e")
+            }
+        }
+    }
 
     private fun loadDrafts() {
         val list = draftList ?: return
@@ -480,10 +570,23 @@ object OverlayController {
     }
 
     private var _currentChatId: String? = null
+    private var _currentChatName: String? = null
 
     fun setChatId(id: String) {
         _currentChatId = id
+        _currentChatName = null  // reset name; hook will re-populate it via setChatName
         // Update the debug label in the panel header if it's visible
+        Handler(Looper.getMainLooper()).post {
+            chatIdLabel?.text = chatIdDebugText()
+            // If the panel is open and the new ID contains a name slug (final ID), reload drafts
+            if (isPanelVisible && id.matches(Regex("^messenger_(web|android)_\\d+_.+"))) {
+                loadDrafts()
+            }
+        }
+    }
+
+    fun setChatName(name: String?) {
+        _currentChatName = name
         Handler(Looper.getMainLooper()).post {
             chatIdLabel?.text = chatIdDebugText()
         }
@@ -493,8 +596,10 @@ object OverlayController {
 
     private fun chatIdDebugText(): String {
         val id = _currentChatId
+        val name = _currentChatName
         val pkg = currentPackage
         return when {
+            id != null && name != null -> "$name ($id)"
             id != null  -> "scope: $id"
             pkg.isNotEmpty() -> "scope: $pkg (app-level)"
             else             -> "scope: unknown"

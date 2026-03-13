@@ -609,7 +609,10 @@
         // Try to match Facebook Messenger chat pattern
         const fbMatch = url.match(/\/t\/(\d+)/);
         if (fbMatch) {
-            return fbMatch[1];
+            const numericId = fbMatch[1];
+            const name = getCurrentChatName();
+            const nameSlug = name ? sanitizeNameSlug(name) : null;
+            return nameSlug ? `messenger_web_${numericId}_${nameSlug}` : `messenger_web_${numericId}`;
         }
         
         // Try to match Discord channel pattern: /channels/SERVER_ID/CHANNEL_ID
@@ -632,6 +635,18 @@
             .substring(0, 200);            // Limit length
         
         return sanitizedUrl || 'default_page';
+    }
+
+    // Converts a display name to a safe Firestore document ID slug
+    // e.g. "Cat Fren" → "cat_fren", "ফাহাদ" → unicode preserved but spaces/specials → _
+    function sanitizeNameSlug(name) {
+        return name
+            .trim()
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}]/gu, '_')  // replace non-letter/digit with _
+            .replace(/_+/g, '_')               // collapse multiple underscores
+            .replace(/^_|_$/g, '')             // trim leading/trailing _
+            .substring(0, 50);                 // max 50 chars
     }
 
     // Function to get the display name of the current conversation partner / group
@@ -2095,6 +2110,19 @@
             }
             
             const savedMessages = response.messages || [];
+
+            // Lazy back-fill: if the stored doc has no contactName but we can detect one now, patch it silently
+            if (!response.contactName && response.exists) {
+                const detectedName = getCurrentChatName();
+                if (detectedName) {
+                    chrome.runtime.sendMessage({
+                        action: 'saveDraft',
+                        chatId: chatId,
+                        messages: savedMessages,
+                        contactName: detectedName
+                    });
+                }
+            }
 
             if (savedMessages.length === 0) {
                 ui.body.innerHTML = '<p>No saved messages for this chat</p>';

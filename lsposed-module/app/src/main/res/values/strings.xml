@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">GlitchDraft LSPosed</string>
+    <string name="app_name">GlitchDraft</string>
     <string name="app_description">Injects the GlitchDraft draft-saving UI into WebView-based messaging apps</string>
 </resources>

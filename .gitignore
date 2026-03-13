@@ -1,6 +1,10 @@
 extension/key.pem
 
-# ── LSPosed module – Android / Gradle build artifacts ──────────────────────
+# Extension - Node tooling
+extension/node_modules/
+extension/pnpm-lock.yaml
+
+# LSPosed module - Android / Gradle build artifacts
 lsposed-module/.gradle/
 lsposed-module/build/
 lsposed-module/app/build/
@@ -24,3 +28,8 @@ lsposed-module/gradle/wrapper/gradle-wrapper.jar
 lsposed-module/.DS_Store
 lsposed-module/captures/
 lsposed-module/lint-results*
+
+# Secrets / environment files - never commit credentials
+.env
+**/.env
+

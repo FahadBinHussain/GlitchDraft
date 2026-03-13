@@ -2,9 +2,13 @@ package com.fahad.glitchdraft.lsposed.hook
 
 import android.app.Activity
 import android.content.res.AssetManager
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.WebView
+import android.widget.TextView
 import com.fahad.glitchdraft.lsposed.overlay.OverlayController
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -96,6 +100,13 @@ class GlitchDraftHook : IXposedHookLoadPackage {
     // -------------------------------------------------------------------------
 
     private fun hookActivityForOverlay(lpparam: XC_LoadPackage.LoadPackageParam) {
+        // Load the extension icon once for use as the toggle button icon
+        val iconBitmap = try {
+            getModuleAssetManager(lpparam)
+                ?.open("glitchdraft/icon128.png")
+                ?.use { BitmapFactory.decodeStream(it) }
+        } catch (_: Throwable) { null }
+
         try {
             val activityClass = XposedHelpers.findClass("android.app.Activity", lpparam.classLoader)
 
@@ -111,8 +122,11 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                             try {
                                 if (!OverlayController.isAttached()) {
                                     XposedBridge.log("$TAG: Attaching overlay for $activityName in ${lpparam.packageName}")
+                                    if (iconBitmap != null) OverlayController.setIcon(iconBitmap)
                                     OverlayController.attach(activity, lpparam.packageName)
                                 }
+                                // Show the overlay toggle (was hidden on pause)
+                                OverlayController.show()
                                 // Try to extract a chat ID from the Activity's intent
                                 // each time it resumes (covers navigation between conversations)
                                 val chatId = extractChatIdFromActivity(activity, lpparam.packageName)
@@ -120,6 +134,9 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                                 if (chatId != null) {
                                     OverlayController.setChatId(chatId)
                                 }
+                                // Extract conversation name from the view hierarchy
+                                val chatName = extractChatNameFromActivity(activity, lpparam.packageName)
+                                OverlayController.setChatName(chatName)
                             } catch (e: Throwable) {
                                 XposedBridge.log("$TAG: OverlayController.attach failed: $e")
                             }
@@ -127,6 +144,18 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                     }
                 }
             )
+
+            // Hide overlay when the activity loses focus (user switches apps, goes to home, etc.)
+            XposedHelpers.findAndHookMethod(
+                activityClass,
+                "onPause",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        OverlayController.hide()
+                    }
+                }
+            )
+
         } catch (e: Throwable) {
             XposedBridge.log("$TAG: Failed to hook Activity.onResume: $e")
         }
@@ -267,6 +296,27 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                             }
                         }
 
+                        // Dump args_surface_options fields for debug (name may be there)
+                        val surfaceOptions = args?.get("args_surface_options")
+                        if (surfaceOptions != null) {
+                            try {
+                                var cls: Class<*>? = surfaceOptions.javaClass
+                                while (cls != null && cls != Any::class.java) {
+                                    for (f in cls.declaredFields) {
+                                        f.isAccessible = true
+                                        val v = try { f.get(surfaceOptions) } catch (_: Throwable) { null }
+                                        val vStr = v?.toString() ?: continue
+                                        if (vStr.length in 1..100) {
+                                            XposedBridge.log("$TAG: SurfaceOptions field[${f.name}:${f.type.simpleName}]='$vStr'")
+                                        }
+                                    }
+                                    cls = cls.superclass
+                                }
+                            } catch (e: Throwable) {
+                                XposedBridge.log("$TAG: SurfaceOptions dump failed: $e")
+                            }
+                        }
+
                         // Scan fields of the fragment for thread/conversation IDs
                         val chatId = extractFromFragmentArgs(args, pkg, fragName)
                             ?: scanFragmentFields(fragment, fragName, pkg)
@@ -275,6 +325,40 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                             XposedBridge.log("$TAG: Fragment[$fragName] → chatId=$chatId")
                             Handler(Looper.getMainLooper()).post {
                                 OverlayController.setChatId(chatId)
+                                // Delay name extraction so the UI is fully rendered
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    val activity = try {
+                                        val m = fragment.javaClass.getMethod("getActivity")
+                                        m.invoke(fragment) as? Activity
+                                    } catch (_: Throwable) { null }
+
+                                    val fragmentView = try {
+                                        val m = fragment.javaClass.getMethod("getView")
+                                        m.invoke(fragment) as? View
+                                    } catch (_: Throwable) { null }
+
+                                    XposedBridge.log("$TAG: Fragment[$fragName] delayed: fragmentView=$fragmentView activity=$activity")
+
+                                    val chatName = when {
+                                        fragmentView != null -> extractNameFromFragmentView(fragmentView, activity)
+                                        activity != null -> dumpAndExtractNameFromActivity(activity, pkg)
+                                        else -> null
+                                    }
+                                    XposedBridge.log("$TAG: Fragment[$fragName] chatName=$chatName (delayed)")
+
+                                    // If we got a name, rebuild the chatId to include the name slug
+                                    // e.g. "messenger_android_410625006" + "Cat Fren" → "messenger_android_410625006_cat_fren"
+                                    if (chatName != null && chatId.startsWith("messenger_android_")) {
+                                        val numericPart = chatId.removePrefix("messenger_android_")
+                                        val slug = sanitizeNameSlug(chatName)
+                                        if (slug.isNotBlank()) {
+                                            val fullId = "messenger_android_${numericPart}_${slug}"
+                                            XposedBridge.log("$TAG: Fragment[$fragName] updated chatId=$fullId")
+                                            OverlayController.setChatId(fullId)
+                                        }
+                                    }
+                                    OverlayController.setChatName(chatName)
+                                }, 800)
                             }
                         }
                     }
@@ -329,19 +413,21 @@ class GlitchDraftHook : IXposedHookLoadPackage {
      * Converts a raw thread key to a Firestore document ID that matches
      * what the browser extension uses.
      *
-     * Messenger: "ADVANCED_CRYPTO_ONE_TO_ONE:410625012" → "410625012"
-     *            (extension reads /t/(\d+) from URL → just the number)
-     * WhatsApp:  "1234567890@s.whatsapp.net" → "1234567890"
+     * Messenger: "ADVANCED_CRYPTO_ONE_TO_ONE:410625012" → "messenger_410625012"
+     *            (extension reads /t/(\d+) from URL → "messenger_" + the number)
+     * WhatsApp:  "1234567890@s.whatsapp.net" → "whatsapp_1234567890"
      *            (extension uses jid without domain)
      * Discord:   "1234567" → "discord_GUILD_1234567"
      *            (extension uses discord_{guild}_{channel})
      */
-    private fun normalizeToFirestoreId(raw: String, prefix: String): String {
+    private fun normalizeToFirestoreId(raw: String, prefix: String, name: String? = null): String {
         return when (prefix) {
             "messenger" -> {
-                // "TYPE:numeric_id" → "numeric_id" (matches extension's /t/(\d+))
+                // "TYPE:numeric_id" → "messenger_android_numeric_id[_nameslug]"
                 val colonIdx = raw.lastIndexOf(':')
-                if (colonIdx >= 0) raw.substring(colonIdx + 1) else raw
+                val numericId = if (colonIdx >= 0) raw.substring(colonIdx + 1) else raw
+                val slug = name?.let { sanitizeNameSlug(it) }?.takeIf { it.isNotBlank() }
+                if (slug != null) "messenger_android_${numericId}_${slug}" else "messenger_android_$numericId"
             }
             "whatsapp" -> {
                 // "1234567890@s.whatsapp.net" → "1234567890"
@@ -349,6 +435,18 @@ class GlitchDraftHook : IXposedHookLoadPackage {
             }
             else -> "${prefix}_$raw"
         }
+    }
+
+    /** Converts a display name to a safe slug for Firestore doc IDs.
+     *  e.g. "Cat Fren" → "cat_fren", "فلان الفلاني" → arabic chars kept but spaces → "_"
+     */
+    private fun sanitizeNameSlug(name: String): String {
+        return name.trim()
+            .lowercase()
+            .replace(Regex("[^\\p{L}\\p{N}]"), "_")  // non-letter/digit → _
+            .replace(Regex("_+"), "_")                 // collapse multiple _
+            .trim('_')
+            .take(50)
     }
 
     private fun scanFragmentFields(fragment: Any, fragName: String, pkg: String): String? {
@@ -604,6 +702,268 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                 null
             }
         }
+    }
+
+    /**
+     * Scans the Activity's window DecorView for a candidate conversation name.
+     *
+     * Strategy (in priority order):
+     *  1. Activity.title — on some Messenger builds the ActionBar title is the name
+     *  2. Walk the DecorView for a Toolbar and read its title TextView (via reflection)
+     *  3. Walk TextViews in the top 25% of screen — name is always in the header bar
+     */
+    private fun extractChatNameFromActivity(activity: Activity, pkg: String): String? {
+        if (!pkg.contains("facebook") && !pkg.contains("orca")) return null
+        return try {
+            // Strategy 1: ActionBar / window title
+            val winTitle = activity.title?.toString()?.trim()
+            if (!winTitle.isNullOrBlank() && isValidName(winTitle)) {
+                XposedBridge.log("$TAG: chatName from title='$winTitle'")
+                return winTitle
+            }
+
+            // Strategy 2+3: walk DecorView
+            val decorView = activity.window?.decorView ?: return null
+            extractNameFromViewTree(decorView, activity)
+        } catch (e: Throwable) {
+            XposedBridge.log("$TAG: extractChatNameFromActivity failed: $e")
+            null
+        }
+    }
+
+    private fun extractNameFromViewTree(root: View, activity: Activity): String? {
+        val screenHeight = try { activity.window.decorView.height.takeIf { it > 0 } ?: 2400 } catch (_: Throwable) { 2400 }
+        val headerZone = screenHeight / 4  // top 25% of screen
+
+        val queue = ArrayDeque<View>()
+        queue.add(root)
+        val candidates = mutableListOf<Pair<Int, String>>() // <y-position, text>
+
+        while (queue.isNotEmpty()) {
+            val v = queue.removeFirst()
+
+            // Strategy 2: try to read Toolbar title via reflection
+            if (v.javaClass.name.contains("Toolbar", ignoreCase = true)) {
+                for (fieldName in listOf("mTitleTextView", "titleTextView", "mTitle")) {
+                    val toolbarTitle = try {
+                        val f = findFieldInHierarchy(v.javaClass, fieldName) ?: continue
+                        f.isAccessible = true
+                        val value = f.get(v)
+                        if (value is TextView) value.text?.toString()?.trim()
+                        else value?.toString()?.trim()
+                    } catch (_: Throwable) { null }
+                    if (toolbarTitle != null && isValidName(toolbarTitle)) {
+                        XposedBridge.log("$TAG: chatName from Toolbar.$fieldName='$toolbarTitle'")
+                        return toolbarTitle
+                    }
+                }
+            }
+
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) queue.add(v.getChildAt(i))
+            }
+
+            // Strategy 3: TextViews in the header zone only
+            if (v is TextView) {
+                val text = v.text?.toString()?.trim() ?: continue
+                if (!isValidName(text)) continue
+                val loc = IntArray(2)
+                v.getLocationOnScreen(loc)
+                val y = loc[1]
+                if (y in 0..headerZone) {
+                    candidates.add(y to text)
+                }
+            }
+        }
+
+        if (candidates.isEmpty()) return null
+        val best = candidates.minByOrNull { it.first }?.second
+        XposedBridge.log("$TAG: chatName from view tree='$best'")
+        return best
+    }
+
+    /**
+     * Scans the Activity's DecorView for the conversation name using
+     * content descriptions and accessibility nodes (works with Litho).
+     */
+    private fun dumpAndExtractNameFromActivity(activity: Activity, pkg: String): String? {
+        if (!pkg.contains("facebook") && !pkg.contains("orca")) return null
+        return try {
+            val decorView = activity.window?.decorView ?: run {
+                XposedBridge.log("$TAG: dumpAndExtract — no decorView")
+                return null
+            }
+            val screenHeight = try { decorView.height.takeIf { it > 0 } ?: 2400 } catch (_: Throwable) { 2400 }
+            val headerZone = screenHeight / 3  // top 33% of screen
+
+            val queue = ArrayDeque<View>()
+            queue.add(decorView)
+            val candidates = mutableListOf<Triple<Int, Int, String>>() // y, x, text
+
+            while (queue.isNotEmpty()) {
+                val v = queue.removeFirst()
+                if (v is ViewGroup) {
+                    for (i in 0 until v.childCount) queue.add(v.getChildAt(i))
+                }
+                val loc = IntArray(2)
+                v.getLocationOnScreen(loc)
+                val y = loc[1]
+                if (y > headerZone) continue
+
+                // contentDescription
+                val cd = v.contentDescription?.toString()?.trim()
+                if (cd != null && isValidName(cd)) {
+                    XposedBridge.log("$TAG: DecorCD y=$y cls=${v.javaClass.simpleName} cd='$cd'")
+                    candidates.add(Triple(y, loc[0], cd))
+                }
+
+                // getText()
+                val text = try {
+                    val m = v.javaClass.getMethod("getText")
+                    (m.invoke(v) as? CharSequence)?.toString()?.trim()
+                } catch (_: Throwable) { null }
+                if (text != null && isValidName(text)) {
+                    XposedBridge.log("$TAG: DecorText y=$y cls=${v.javaClass.simpleName} text='$text'")
+                    candidates.add(Triple(y, loc[0], text))
+                }
+
+                // accessibility node
+                try {
+                    val node = v.createAccessibilityNodeInfo()
+                    if (node != null) {
+                        val nodeText = node.text?.toString()?.trim()
+                        if (nodeText != null && isValidName(nodeText)) {
+                            XposedBridge.log("$TAG: DecorA11y y=$y cls=${v.javaClass.simpleName} text='$nodeText'")
+                            candidates.add(Triple(y, loc[0], nodeText))
+                        }
+                        node.recycle()
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            val best = candidates.minByOrNull { it.first }?.third
+            XposedBridge.log("$TAG: dumpAndExtract → best='$best' from ${candidates.size} candidates")
+            best
+        } catch (e: Throwable) {
+            XposedBridge.log("$TAG: dumpAndExtractNameFromActivity failed: $e")
+            null
+        }
+    }
+
+    private fun findFieldInHierarchy(cls: Class<*>, name: String): java.lang.reflect.Field? {
+        var c: Class<*>? = cls
+        while (c != null && c != Any::class.java) {
+            try { return c.getDeclaredField(name) } catch (_: NoSuchFieldException) {}
+            c = c.superclass
+        }
+        return null
+    }
+
+    /**
+     * Scans a fragment's view subtree for the conversation name.
+     * Uses content descriptions and accessibility nodes (works with Litho).
+     * Messenger sets contentDescription="Name, Thread details" on the header row.
+     */
+    private fun extractNameFromFragmentView(fragmentView: View, activity: Activity?): String? {
+        val screenHeight = try { activity?.window?.decorView?.height?.takeIf { it > 0 } ?: 2400 } catch (_: Throwable) { 2400 }
+        val headerZone = screenHeight / 3  // top 33% of screen
+
+        val queue = ArrayDeque<View>()
+        queue.add(fragmentView)
+
+        while (queue.isNotEmpty()) {
+            val v = queue.removeFirst()
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) queue.add(v.getChildAt(i))
+            }
+
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            if (loc[1] > headerZone) continue  // only look in header area
+
+            // Strategy 1: contentDescription — look for "Name, Thread details" pattern
+            val cd = v.contentDescription?.toString()?.trim()
+            if (cd != null) {
+                val nameFromCd = extractNameFromThreadDetails(cd)
+                if (nameFromCd != null) {
+                    XposedBridge.log("$TAG: chatName from contentDesc='$nameFromCd' (original='$cd')")
+                    return nameFromCd
+                }
+            }
+
+            // Strategy 2: accessibility node text
+            try {
+                val node = v.createAccessibilityNodeInfo()
+                if (node != null) {
+                    val nodeText = node.text?.toString()?.trim()
+                    if (nodeText != null) {
+                        val nameFromNode = extractNameFromThreadDetails(nodeText)
+                        if (nameFromNode != null) {
+                            XposedBridge.log("$TAG: chatName from a11y='$nameFromNode'")
+                            node.recycle()
+                            return nameFromNode
+                        }
+                    }
+                    node.recycle()
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // Fallback: any valid name-like content description in header zone
+        val fallbackQueue = ArrayDeque<View>()
+        fallbackQueue.add(fragmentView)
+        val fallbackCandidates = mutableListOf<Pair<Int, String>>()
+        while (fallbackQueue.isNotEmpty()) {
+            val v = fallbackQueue.removeFirst()
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) fallbackQueue.add(v.getChildAt(i))
+            }
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            if (loc[1] > headerZone) continue
+            val cd = v.contentDescription?.toString()?.trim()
+            if (cd != null && isValidName(cd) && cd.lowercase() != "back") {
+                fallbackCandidates.add(loc[1] to cd)
+            }
+        }
+        return fallbackCandidates.minByOrNull { it.first }?.second
+    }
+
+    /**
+     * Extracts the contact name from Messenger's "Name, Thread details" pattern.
+     * Returns null if the string doesn't match this pattern.
+     */
+    private fun extractNameFromThreadDetails(text: String): String? {
+        // Pattern: "Cat Fren, Thread details" → "Cat Fren"
+        val suffixes = listOf(", Thread details", ", Conversation details", ", Chat details", ", Group details")
+        for (suffix in suffixes) {
+            if (text.endsWith(suffix, ignoreCase = true)) {
+                val name = text.removeSuffix(suffix).trim()
+                if (name.isNotBlank() && name.length <= 60) return name
+            }
+        }
+        return null
+    }
+
+    private val NOISE_WORDS = setOf(
+        "messenger", "chats", "message", "messages", "search", "people",
+        "calls", "stories", "add story", "new message", "active",
+        "active now", "send", "ok", "cancel", "done", "settings",
+        "no messages in this conversation.", "type a message…", "type a message...",
+        "react", "reply", "more", "home"
+    )
+
+    private fun isValidName(text: String): Boolean {
+        if (text.isBlank()) return false
+        if (text.length > 60) return false  // names are short
+        if (text.all { it.isDigit() || it == '_' || it == '-' }) return false  // purely numeric/symbols
+        val lower = text.lowercase()
+        if (lower in NOISE_WORDS) return false
+        // Reject sentence-like text: contains a period followed by a letter, or ends with punctuation
+        if (text.contains(". ") || text.endsWith(".") || text.endsWith("!") || text.endsWith("?")) return false
+        // Reject if word count > 5 (a name shouldn't be a long phrase)
+        if (text.split(" ").size > 5) return false
+        return true
     }
 
     private fun readAsset(assetManager: AssetManager, path: String): String? {

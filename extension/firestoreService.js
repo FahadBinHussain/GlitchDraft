@@ -29,13 +29,51 @@ class FirestoreService {
     }
     async getDraft(threadId) {
         const config = await this.getConfig();
-        const url = "https://firestore.googleapis.com/v1/projects/" + config.projectId + "/databases/(default)/documents/drafts/" + threadId + "?key=" + config.apiKey;
-        const response = await fetch(url);
-        if (response.status === 404) return [];
-        if (!response.ok) throw new Error("Get failed: " + response.status);
-        const doc = await response.json();
-        const messages = (doc.fields?.messages?.arrayValue?.values || []).map(v => ({ html: v.mapValue?.fields?.html?.stringValue || "", timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0") }));
-        return messages;
+        const baseUrl = "https://firestore.googleapis.com/v1/projects/" + config.projectId + "/databases/(default)/documents/drafts";
+        const key = "?key=" + config.apiKey;
+
+        // ── For messenger threads: match by name slug across platforms ──
+        // Web:     "messenger_web_7990669924323622_cat_fren"
+        // Android: "messenger_android_410625006_cat_fren"
+        // → extract the name slug (everything after the 3rd underscore segment),
+        //   list all docs, find any messenger_* doc with the same name slug.
+        const messengerMatch = threadId.match(/^messenger_(?:web|android)_\d+_(.+)$/);
+        if (messengerMatch) {
+            const nameSlug = messengerMatch[1];
+            const listRes = await fetch(baseUrl + key);
+            if (listRes.ok) {
+                const data = await listRes.json();
+                const docs = data.documents || [];
+                // Find any messenger doc (web or android) whose ID ends with the same name slug
+                const match = docs.find(d => {
+                    const docId = d.name.split('/').pop();
+                    return /^messenger_(web|android)_/.test(docId) && docId.endsWith('_' + nameSlug);
+                });
+                if (match) {
+                    const messages = (match.fields?.messages?.arrayValue?.values || []).map(v => ({ html: v.mapValue?.fields?.html?.stringValue || "", timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0") }));
+                    const contactName = match.fields?.contactName?.stringValue || null;
+                    return { messages, contactName, exists: true };
+                }
+            }
+            return { messages: [], contactName: null, exists: false };
+        }
+
+        // ── No name slug yet (e.g. "messenger_web_123" without slug): exact match ──
+        const messengerNoSlug = threadId.match(/^messenger_(?:web|android)_\d+$/);
+        if (messengerNoSlug) {
+            // Can't match by name — fall through to exact match attempt
+        }
+
+        // ── Non-messenger or no-slug messenger: exact match ──
+        const exactRes = await fetch(baseUrl + "/" + encodeURIComponent(threadId) + key);
+        if (exactRes.ok) {
+            const doc = await exactRes.json();
+            const messages = (doc.fields?.messages?.arrayValue?.values || []).map(v => ({ html: v.mapValue?.fields?.html?.stringValue || "", timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0") }));
+            const contactName = doc.fields?.contactName?.stringValue || null;
+            return { messages, contactName, exists: true };
+        }
+        if (exactRes.status === 404) return { messages: [], contactName: null, exists: false };
+        throw new Error("Get failed: " + exactRes.status);
     }
     async deleteDraft(threadId) {
         const config = await this.getConfig();

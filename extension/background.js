@@ -81,9 +81,9 @@ async function handleSync() {
 
 async function handleGet(chatId) {
     try {
-        const messages = await firestoreService.getDraft(chatId);
+        const result = await firestoreService.getDraft(chatId);
         await chrome.storage.local.set({ lastSyncTime: Date.now() });
-        return { success: true, messages: messages };
+        return { success: true, messages: result.messages, contactName: result.contactName, exists: result.exists };
     } catch (error) {
         return { success: false, message: error.message };
     }

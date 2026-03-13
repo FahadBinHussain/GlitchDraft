@@ -32,4 +32,4 @@ lsposed-module/lint-results*
 # Secrets / environment files - never commit credentials
 .env
 **/.env
-
+*.json

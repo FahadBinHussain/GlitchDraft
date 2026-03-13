@@ -37,14 +37,15 @@ class FirestoreService {
         // Android: "messenger_android_410625006_cat_fren"
         // → extract the name slug (everything after the 3rd underscore segment),
         //   list all docs, find any messenger_* doc with the same name slug.
-        const messengerMatch = threadId.match(/^messenger_(?:web|android)_\d+_(.+)$/);
+        const messengerMatch = threadId.match(/^messenger_(?:web|android)_(\d+)_(.+)$/);
         if (messengerMatch) {
-            const nameSlug = messengerMatch[1];
+            const numericId = messengerMatch[1];
+            const nameSlug = messengerMatch[2];
             const listRes = await fetch(baseUrl + key);
             if (listRes.ok) {
                 const data = await listRes.json();
                 const docs = data.documents || [];
-                // Find any messenger doc (web or android) whose ID ends with the same name slug
+                // 1) Find any messenger doc (web or android) whose ID ends with the same name slug
                 const match = docs.find(d => {
                     const docId = d.name.split('/').pop();
                     return /^messenger_(web|android)_/.test(docId) && docId.endsWith('_' + nameSlug);
@@ -52,7 +53,28 @@ class FirestoreService {
                 if (match) {
                     const messages = (match.fields?.messages?.arrayValue?.values || []).map(v => ({ html: v.mapValue?.fields?.html?.stringValue || "", timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0") }));
                     const contactName = match.fields?.contactName?.stringValue || null;
-                    return { messages, contactName, exists: true };
+                    return { messages, contactName, exists: true, foundDocId: match.name.split('/').pop() };
+                }
+                // 2) Fallback: look for a no-slug doc with the same numeric ID (e.g. imported from old format)
+                const noSlugId = 'messenger_web_' + numericId;
+                const noSlugIdAndroid = 'messenger_android_' + numericId;
+                const noSlugMatch = docs.find(d => {
+                    const docId = d.name.split('/').pop();
+                    return docId === noSlugId || docId === noSlugIdAndroid;
+                });
+                if (noSlugMatch) {
+                    const messages = (noSlugMatch.fields?.messages?.arrayValue?.values || []).map(v => ({ html: v.mapValue?.fields?.html?.stringValue || "", timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0") }));
+                    const contactName = noSlugMatch.fields?.contactName?.stringValue || null;
+                    const foundDocId = noSlugMatch.name.split('/').pop();
+                    // Signal that this was found under a legacy no-slug ID so caller can rename it
+                    return { messages, contactName, exists: true, foundDocId, needsRename: true, renameFrom: foundDocId, renameTo: threadId };
+                }
+                // 3) Also check bare numeric (truly old format, no messenger_ prefix)
+                const bareMatch = docs.find(d => d.name.split('/').pop() === numericId);
+                if (bareMatch) {
+                    const messages = (bareMatch.fields?.messages?.arrayValue?.values || []).map(v => ({ html: v.mapValue?.fields?.html?.stringValue || "", timestamp: parseInt(v.mapValue?.fields?.timestamp?.integerValue || "0") }));
+                    const contactName = bareMatch.fields?.contactName?.stringValue || null;
+                    return { messages, contactName, exists: true, foundDocId: numericId, needsRename: true, renameFrom: numericId, renameTo: threadId };
                 }
             }
             return { messages: [], contactName: null, exists: false };
@@ -74,6 +96,16 @@ class FirestoreService {
         }
         if (exactRes.status === 404) return { messages: [], contactName: null, exists: false };
         throw new Error("Get failed: " + exactRes.status);
+    }
+    // Rename a draft: copy data to new ID, delete old ID.
+    async renameDraft(fromId, toId, messages, contactName) {
+        try {
+            await this.saveDraft(toId, messages, contactName);
+            await this.deleteDraft(fromId);
+            console.log('[FirestoreService] Renamed draft', fromId, '→', toId);
+        } catch (e) {
+            console.error('[FirestoreService] renameDraft failed:', e);
+        }
     }
     async deleteDraft(threadId) {
         const config = await this.getConfig();
@@ -125,5 +157,22 @@ class FirestoreService {
         const uiPositions = JSON.parse(doc.fields?.uiPositions?.stringValue || "{}");
         const appConfig = JSON.parse(doc.fields?.appConfig?.stringValue || "{}");
         return { uiPositions, appConfig };
+    }
+    // Given a bare numeric Messenger thread ID, scan all drafts and return the full
+    // document ID (e.g. "messenger_web_123_john_doe") that matches, or null if not found.
+    async findDocByNumericId(numericId) {
+        try {
+            const allDrafts = await this.getAllDrafts();
+            const prefix = 'messenger_web_' + numericId;
+            const prefixAndroid = 'messenger_android_' + numericId;
+            const match = Object.keys(allDrafts).find(id =>
+                id.startsWith(prefix + '_') || id === prefix ||
+                id.startsWith(prefixAndroid + '_') || id === prefixAndroid
+            );
+            return match || null;
+        } catch (e) {
+            console.error('[FirestoreService] findDocByNumericId error:', e);
+            return null;
+        }
     }
 }

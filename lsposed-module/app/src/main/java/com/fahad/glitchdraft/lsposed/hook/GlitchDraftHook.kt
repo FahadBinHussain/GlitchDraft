@@ -571,9 +571,11 @@ class GlitchDraftHook : IXposedHookLoadPackage {
 
                 val css = readAsset(assetManager, "glitchdraft/styles.css")
                 val shim = readAsset(assetManager, "glitchdraft/glitchdraft_shim.js")
+                val draftImportJs = readAsset(assetManager, "glitchdraft/draftImport.js")
+                val draftSyncJs = readAsset(assetManager, "glitchdraft/draftSync.js")
                 val contentJs = readAsset(assetManager, "glitchdraft/content.js")
 
-                if (css == null || shim == null || contentJs == null) {
+                if (css == null || shim == null || draftImportJs == null || draftSyncJs == null || contentJs == null) {
                     XposedBridge.log("$TAG: One or more assets could not be read, aborting injection")
                     return@post
                 }
@@ -604,17 +606,37 @@ class GlitchDraftHook : IXposedHookLoadPackage {
                 """.trimIndent()
 
                 webView.evaluateJavascript(guardedShim) {
-                    // 3. Inject content.js only after shim is ready
-                    val guardedContent = """
+                    // 3. Inject module files (must come after shim, before content.js)
+                    val guardedImport = """
                         (function() {
-                            if (window.__glitchdraft_loaded__) return;
-                            window.__glitchdraft_loaded__ = true;
-                            $contentJs
+                            if (window.__glitchdraft_import_loaded__) return;
+                            window.__glitchdraft_import_loaded__ = true;
+                            $draftImportJs
+                        })();
+                    """.trimIndent()
+                    val guardedSync = """
+                        (function() {
+                            if (window.__glitchdraft_sync_loaded__) return;
+                            window.__glitchdraft_sync_loaded__ = true;
+                            $draftSyncJs
                         })();
                     """.trimIndent()
 
-                    webView.evaluateJavascript(guardedContent) { result ->
-                        XposedBridge.log("$TAG: Injection complete, result=$result")
+                    webView.evaluateJavascript(guardedImport) {
+                        webView.evaluateJavascript(guardedSync) {
+                            // 4. Inject content.js only after modules are ready
+                            val guardedContent = """
+                                (function() {
+                                    if (window.__glitchdraft_loaded__) return;
+                                    window.__glitchdraft_loaded__ = true;
+                                    $contentJs
+                                })();
+                            """.trimIndent()
+
+                            webView.evaluateJavascript(guardedContent) { result ->
+                                XposedBridge.log("$TAG: Injection complete, result=$result")
+                            }
+                        }
                     }
                 }
 

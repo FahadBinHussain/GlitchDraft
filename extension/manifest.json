@@ -25,6 +25,8 @@
                 "*://*.hostseba.com/register.php*"
             ],
             "js": [
+                "draftImport.js",
+                "draftSync.js",
                 "content.js"
             ],
             "css": [

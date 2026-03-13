@@ -36,6 +36,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         handleSaveSettings(request.settings).then(sendResponse);
         return true;
     }
+    if (request.action === "renameDraft") {
+        firestoreService.renameDraft(request.fromId, request.toId, request.messages, request.contactName).then(() => sendResponse({ success: true })).catch(e => sendResponse({ success: false, message: e.message }));
+        return true;
+    }
     if (request.action === "getSettings") {
         handleGetSettings().then(sendResponse);
         return true;
@@ -83,16 +87,38 @@ async function handleGet(chatId) {
     try {
         const result = await firestoreService.getDraft(chatId);
         await chrome.storage.local.set({ lastSyncTime: Date.now() });
-        return { success: true, messages: result.messages, contactName: result.contactName, exists: result.exists };
+        return {
+            success: true,
+            messages: result.messages,
+            contactName: result.contactName,
+            exists: result.exists,
+            needsRename: result.needsRename || false,
+            renameFrom: result.renameFrom || null,
+            renameTo: result.renameTo || null
+        };
     } catch (error) {
         return { success: false, message: error.message };
     }
 }
 
 async function handleUpload(chatId, messages, contactName) {
-    console.log('[BACKGROUND] handleUpload called, chatId:', chatId, 'messages:', messages, 'contactName:', contactName);
+    console.log('[BACKGROUND] handleUpload called, chatId:', chatId, 'messages:', messages?.length, 'contactName:', contactName);
     try {
-        await firestoreService.saveDraft(chatId, messages, contactName);
+        // If chatId is a bare numeric ID (legacy export format), try to find the matching
+        // messenger_web_ID_slug document in Firestore and import to that instead.
+        let resolvedId = chatId;
+        if (/^\d+$/.test(chatId)) {
+            const existing = await firestoreService.findDocByNumericId(chatId);
+            if (existing) {
+                resolvedId = existing;
+                console.log('[BACKGROUND] Resolved bare numeric ID', chatId, '→', resolvedId);
+            } else {
+                // No existing doc — prefix as messenger_web_{id} so it at least has the right prefix
+                resolvedId = `messenger_web_${chatId}`;
+                console.log('[BACKGROUND] No match found, using:', resolvedId);
+            }
+        }
+        await firestoreService.saveDraft(resolvedId, messages, contactName);
         await chrome.storage.local.set({ lastSyncTime: Date.now() });
         console.log('[BACKGROUND] Save successful');
         return { success: true };

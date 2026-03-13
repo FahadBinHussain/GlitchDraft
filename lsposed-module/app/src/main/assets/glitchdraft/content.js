@@ -628,6 +628,11 @@
         return sanitizedUrl || 'default_page';
     }
 
+    // Thin wrapper — implementation lives in draftSync.js (gdLazyRenameIfNeeded)
+    function lazyRenameIfNeeded(response, currentChatId) {
+        gdLazyRenameIfNeeded(response, currentChatId, null);
+    }
+
     // WhatsApp-specific chat detection
     function getWhatsAppChatId() {
         // Return cached chat ID if available
@@ -1935,6 +1940,7 @@
             }
             
             const savedMessages = response.messages || [];
+            lazyRenameIfNeeded(response, chatId);
 
             // Add the new message at the beginning
             savedMessages.unshift({
@@ -1999,6 +2005,7 @@
             }
             
             const savedMessages = response.messages || [];
+            lazyRenameIfNeeded(response, chatId);
 
             if (savedMessages.length === 0) {
                 ui.body.innerHTML = '<p>No saved messages for this chat</p>';
@@ -2578,6 +2585,7 @@
             }
             
             const savedMessages = response.messages || [];
+            lazyRenameIfNeeded(response, chatId);
             
             // Find and update the message
             const messageIndex = savedMessages.findIndex(msg => msg.timestamp === timestamp);
@@ -2613,6 +2621,7 @@
             }
             
             const savedMessages = response.messages || [];
+            lazyRenameIfNeeded(response, chatId);
 
             // Find and remove the message
             const messageIndex = savedMessages.findIndex(msg => msg.timestamp === timestamp);
@@ -2680,117 +2689,22 @@
         fileInput.click();
     }
 
-    // Function to import saved messages from a file
+    // Function to import saved messages from a file — shows a chat selection UI
+    // Import/export — implementation lives in draftImport.js
     function importSavedMessages(event) {
-        const file = event.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                const data = JSON.parse(e.target.result);
-
-                if (typeof data !== 'object' || data === null) throw new Error('Invalid data format: not an object');
-
-                // The data to be set in storage
-                let importData = {};
-                let messageCount = 0;
-                let chatCount = 0;
-
-                // Separate settings from message data
-                if (data.config) {
-                    importData.config = data.config;
-                }
-                
-                // Import UI positions (both old and new formats)
-                if (data.containerPosition) {
-                    importData.containerPosition = data.containerPosition;
-                }
-                if (data.togglePosition) {
-                    importData.togglePosition = data.togglePosition;
-                }
-
-                // Import message data and site-specific UI positions
-                for (const key in data) {
-                    // Include site-specific UI positions (uiPositions_*)
-                    if (key.startsWith('uiPositions_')) {
-                        importData[key] = data[key];
-                    } else if (key !== 'config' && key !== 'containerPosition' && key !== 'togglePosition') {
-                        if (Array.isArray(data[key])) {
-                            importData[key] = data[key]; // This is a chat's message array
-                            messageCount += data[key].length;
-                            chatCount++;
-                        }
-                    }
-                }
-
-                chrome.storage.local.set(importData, () => {
-                    alert(`Successfully imported ${messageCount} messages for ${chatCount} chats, along with UI settings.`);
-
-                    // Apply imported settings immediately
-                    if (importData.config) {
-                        Object.assign(config, importData.config);
-                        // Force UI updates based on new config if needed
-                        const debugToggleButton = document.querySelector('button[title="Toggle debug mode"]');
-                        if (debugToggleButton) {
-                            debugToggleButton.textContent = config.debugMode ? '🐞 On' : '🐞 Off';
-                        }
-                    }
-                    if (importData.containerPosition || importData.togglePosition) {
-                        loadPositions();
-                    }
-
-                    // Refresh current message view if needed
-                    const currentChatId = getCurrentChatId();
-                    if (currentChatId && importData[currentChatId]) {
-                        loadSavedMessages();
-                    }
-                });
-
-            } catch (error) {
-                alert('Error importing messages: ' + error.message);
-            }
-        };
-        reader.readAsText(file);
-        event.target.value = '';
+        gdImportSavedMessages(event, ui, isContainerVisible, toggleContainer, loadSavedMessages);
     }
-
-    // Function to export all saved messages
+    function showImportSelectionDialog(chatEntries, rawData) {
+        gdShowImportSelectionDialog(chatEntries, ui, isContainerVisible, toggleContainer, loadSavedMessages);
+    }
     function exportSavedMessages() {
-        // chrome.storage.local.get(null) gets all items
-        chrome.storage.local.get(null, async (allData) => {
-            if (Object.keys(allData).length === 0) {
-                alert('No data found to export.');
-                return;
-            }
-
-            // Trigger a sync before exporting to ensure latest data
-            try {
-                await chrome.runtime.sendMessage({ action: 'sync' });
-                console.log('Sync completed before export');
-            } catch (error) {
-                console.warn('Sync before export failed:', error);
-                // Continue with export even if sync fails
-            }
-
-            // Get fresh data after sync
-            chrome.storage.local.get(null, (syncedData) => {
-                // All data including messages and settings will be exported
-                downloadJSON(syncedData, 'messenger_saved_messages_and_settings.json');
-            });
-        });
+        gdExportSavedMessages();
     }
-
-    // Helper function to trigger download
     function downloadJSON(data, filename) {
-        const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data, null, 2));
-        const downloadAnchorNode = document.createElement('a');
-        downloadAnchorNode.setAttribute('href', dataStr);
-        downloadAnchorNode.setAttribute('download', filename);
-        document.body.appendChild(downloadAnchorNode);
-        downloadAnchorNode.click();
-        downloadAnchorNode.remove();
+        gdDownloadJSON(data, filename);
     }
+
+    // (Import/export moved to draftImport.js — see wrappers above)
 
     // Debug function to find input field selectors
     function debugInputFields() {
@@ -3092,170 +3006,24 @@
         startPositionListener();
     }
     
-    // Real-time sync: Poll Firestore for changes every 3 seconds
-    let lastKnownMessagesHash = '';
-    let lastKnownPositionsHash = '';
-    let isFirstPositionLoad = true;
-    let syncInterval = null;
+    // Real-time sync / position polling — implementations live in draftSync.js
 
-    // ---- Firestore real-time position listener (runs in content script, no SW limit) ----
-    let positionListenerAbort = null;
-
-    async function startPositionListener() {
-        // Stop any existing listener
-        if (positionListenerAbort) {
-            positionListenerAbort.abort();
-            positionListenerAbort = null;
-        }
-
-        // Get Firebase config from storage
-        const data = await new Promise(resolve => chrome.storage.local.get(['firebaseConfig'], resolve));
-        const cfg = data.firebaseConfig;
-        if (!cfg) return; // Config not set yet
-
-        const listenUrl = `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/(default)/documents:listen?key=${cfg.apiKey}`;
-        const body = JSON.stringify({
-            addTarget: {
-                documents: { documents: [`projects/${cfg.projectId}/databases/(default)/documents/settings/user`] },
-                targetId: 1
-            }
-        });
-
-        const controller = new AbortController();
-        positionListenerAbort = controller;
-
-        try {
-            const response = await fetch(listenUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
-                signal: controller.signal
-            });
-
-            if (!response.ok || !response.body) return;
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-
-                // Split on newlines — each JSON object is on its own line(s)
-                const lines = buffer.split('\n');
-                buffer = lines.pop(); // Keep incomplete last chunk
-
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (!trimmed || trimmed === '[' || trimmed === ']' || trimmed === ',') continue;
-                    // Strip leading comma if present (array stream format)
-                    const jsonStr = trimmed.startsWith(',') ? trimmed.slice(1) : trimmed;
-                    try {
-                        const evt = JSON.parse(jsonStr);
-                        // documentChange event contains the updated document
-                        const doc = evt?.documentChange?.document;
-                        if (!doc) continue;
-
-                        const uiPositions = JSON.parse(doc.fields?.uiPositions?.stringValue || '{}');
-                        const currentSite = window.location.hostname;
-                        const positionKey = `uiPositions_${currentSite}`;
-                        const sitePositions = uiPositions[positionKey];
-                        if (!sitePositions) continue;
-
-                        const remoteHash = JSON.stringify(sitePositions);
-                        if (remoteHash === lastKnownPositionsHash) continue; // No change
-
-                        // Skip if we just saved locally (avoid snap-back)
-                        if (localPositionDirty) continue;
-
-                        lastKnownPositionsHash = remoteHash;
-
-                        // Update local cache
-                        const localCacheKey = `glitchdraft_pos_${currentSite}`;
-                        chrome.storage.local.set({ [localCacheKey]: sitePositions });
-
-                        // Apply positions
-                        applyPositionsToUI(sitePositions);
-                    } catch (_) { /* ignore parse errors */ }
-                }
-            }
-        } catch (err) {
-            if (err.name === 'AbortError') return; // Intentionally stopped
-            // Reconnect after 5s on unexpected error
-            setTimeout(() => startPositionListener(), 5000);
-        }
-
-        // Stream ended unexpectedly — reconnect
-        if (!controller.signal.aborted) {
-            setTimeout(() => startPositionListener(), 3000);
-        }
+    function startPositionListener() {
+        gdStartPositionListener(
+            applyPositionsToUI,
+            () => isDragging || isDraggingToggle,
+            () => localPositionDirty
+        );
     }
-    // ---- End position listener ----
-    
-    function startRealtimeSync() {
-        // Clear existing interval if any
-        if (syncInterval) {
-            clearInterval(syncInterval);
-        }
-        
-        // Poll every 3 seconds
-        syncInterval = setInterval(() => {
-            const chatId = getCurrentChatId();
-            if (!chatId) return;
-            
-            // Check for message changes
-            chrome.runtime.sendMessage({ action: 'getDraft', chatId: chatId }, (response) => {
-                if (!response || !response.success) return;
-                
-                const messages = response.messages || [];
-                
-                // Create a hash of messages to detect any changes (count, content, timestamps)
-                const messagesHash = JSON.stringify(messages.map(m => ({t: m.timestamp, h: m.html})));
-                
-                // Check if messages changed
-                if (messagesHash !== lastKnownMessagesHash) {
-                    lastKnownMessagesHash = messagesHash;
-                    showNotification('Messages synced from another device', '', 'success');
-                    loadSavedMessages();
-                }
-            });
-            
-            // Check for position changes
-            chrome.runtime.sendMessage({ action: 'getSettings' }, (response) => {
-                if (!response || !response.success) return;
-                
-                const settings = response.settings || {};
-                const currentSite = window.location.hostname;
-                const positionKey = `uiPositions_${currentSite}`;
-                const sitePositions = settings.uiPositions?.[positionKey];
-                
-                // Create a hash of positions
-                const positionsHash = JSON.stringify(sitePositions || {});
-                
-                // Check if positions changed
-                if (positionsHash !== lastKnownPositionsHash && sitePositions) {
-                    const isRealChange = lastKnownPositionsHash !== '' && !isFirstPositionLoad;
-                    lastKnownPositionsHash = positionsHash;
-                    isFirstPositionLoad = false;
-                    
-                    // Skip applying if we just saved locally (avoid snap-back)
-                    if (localPositionDirty) return;
-                    
-                    if (isRealChange) {
-                        showNotification('UI position synced from another device', '', 'success');
-                    }
 
-                    // Update local cache so next refresh restores this remote position
-                    const localCacheKey = `glitchdraft_pos_${currentSite}`;
-                    chrome.storage.local.set({ [localCacheKey]: sitePositions });
-                    
-                    // Apply via shared helper (handles percent→px conversion and clamping)
-                    applyPositionsToUI(sitePositions);
-                }
-            });
-        }, 2000); // Poll every 2 seconds for faster sync
+    function startRealtimeSync() {
+        gdStartRealtimeSync(
+            getCurrentChatId,
+            loadSavedMessages,
+            showNotification,
+            applyPositionsToUI,
+            () => localPositionDirty
+        );
     }
 
     // Theme toggle function
